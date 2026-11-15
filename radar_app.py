@@ -1,0 +1,5 @@
+"""Backward-compatible entry point: redirects to main.py"""
+from main import run_streamlit
+
+if __name__ == "__main__":
+    run_streamlit()
