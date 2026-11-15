@@ -1,0 +1,20 @@
+type,question,retrieval_hit,context_recall,answer_ok
+single,What is the down payment for Palm Residence?,True,True,True
+single,How many years are the installments at Palm Residence?,True,True,False
+single,When will Nile View Towers be delivered?,True,True,True
+single,Is there a discount for paying cash at Palm Residence?,True,True,True
+single,What is the maintenance deposit at Nile View Towers?,True,True,False
+single,How much is the reservation fee and is it refundable?,True,True,True
+single,What is the transfer fee when reselling a unit?,True,True,True
+single,When can I visit the project?,True,True,True
+single,What is the price of unit NV-201?,True,True,False
+single,Which townhouses are available at Palm Residence?,True,False,False
+single,Is unit PR-105 still available?,True,True,False
+single,Which 3-bedroom units are available and what do they cost?,True,False,False
+single,What is the monthly rent for a studio?,,,False
+conv: Follow-up on a project,Tell me about Palm Residence payment plan.,,,True
+conv: Follow-up on a project,And what about the maintenance deposit there?,,,True
+conv: Follow-up on a project,Which of its units are 4 bedrooms?,,,False
+conv: Remembering earlier questions,What is the price of NV-102?,,,False
+conv: Remembering earlier questions,What was the unit I just asked about?,,,False
+conv: Remembering earlier questions,Is it available?,,,True
