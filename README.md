@@ -59,6 +59,7 @@ Unified RADAR Platform
 | `src/inventory.py` | Live unit search; feeds current prices into every chat answer |
 | `src/price_ingest.py` | Parses daily price messages/sheets, applies them with history and approvals |
 | `src/telegram_bot.py` | Telegram price-group listener (long polling) |
+| `src/documents.py` | Stores every daily file, indexes it for RAG, applies prices inside it |
 | `app.py` | CLI alias redirecting to `main.py` |
 | `src/config.py` | Unified configuration (LLM providers, paths, limits) |
 | `src/radar.py` | CRM domain services and SQLite data layer |
@@ -105,11 +106,23 @@ Unit prices change every day, so they live in the `units` table, not in the vect
 * After each update the CRM opportunity agents run (price drops create opportunities) and the RAG
   index is rebuilt in the background.
 
+### Daily documents (any file)
+Send any file to the bot (or `POST /documents`, or `python main.py ingest --file x.pdf`):
+PDF, Excel (`.xlsx`/`.xls`), CSV, Word (`.docx`), `.txt`, `.md`, `.json`.
+
+* The file is saved in `data/documents/<date>/` and listed in `GET /documents` (the same file twice is skipped).
+* A unit sheet updates the units table. Any other file is scanned for unit price lines,
+  so a PDF or Word price list updates prices too. Brochure text like "10% down payment" never reprices a project.
+* Everything else (brochures, policies, offers, notes) is added to the RAG knowledge base and the
+  chat can answer from it, citing the file and page.
+* Photos and scanned PDFs without text are not read yet. Telegram bots can download files up to 20 MB.
+
 ### Telegram setup
 1. Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN`.
 2. In @BotFather run `/setprivacy` → Disable, so the bot can read group messages.
 3. Add the bot to the price group and send `/chatid`. Put the number in `TELEGRAM_PRICE_CHAT_IDS`.
 4. Run `python main.py telegram`. The bot replies in the group with what it changed.
+   Commands: `/help`, `/status` (available units, last price change, pending approvals, latest files), `/chatid`.
 
 ### WhatsApp
 WhatsApp's official API can't read group messages. Use any automation that can forward the

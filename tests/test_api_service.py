@@ -91,4 +91,4 @@ def test_telegram_sheet_file(client, monkeypatch):
     csv = b"Unit ID,Price (EGP),Status\nPR-201,14800000,Available\n"
     tg = FakeTelegram({"f1": csv})
     msg = {"message_id": 9, "chat": {"id": -100}, "document": {"file_id": "f1", "file_name": "today.csv"}}
-    assert telegram_bot.handle_message(tg, msg).applied
+    assert telegram_bot.handle_message(tg, msg).prices.applied

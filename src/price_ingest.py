@@ -131,9 +131,14 @@ def _project_change(line: str, projects: list[str]) -> tuple[str, float] | None:
     project = next((p for p in sorted(projects, key=len, reverse=True) if p and p.lower() in line.lower()), None)
     if not project:
         return None
-    pct = float(m.group(1).replace(" ", ""))
+    raw = m.group(1).replace(" ", "")
+    pct = float(raw)
     low = line.lower()
-    if pct > 0 and any(w in low for w in DOWN_WORDS if w != "-") and "+" not in m.group(1):
+    has_down = any(w in low for w in DOWN_WORDS if w not in ("-", "down"))
+    has_up = any(w in low for w in UP_WORDS if w not in ("+", "up"))
+    if not (raw[0] in "+-" or has_up or has_down):
+        return None  # "10% down payment" is not a price change
+    if pct > 0 and has_down and not raw.startswith("+"):
         pct = -pct
     return project, pct
 
@@ -314,19 +319,21 @@ def _log_run(result: IngestResult, message_key: str | None) -> None:
 
 
 def ingest_text(text: str, source: str = "manual", message_key: str | None = None, llm=None,
-                rebuild: bool = True) -> IngestResult:
+                rebuild: bool = True, project_changes: bool = True) -> IngestResult:
     result = IngestResult(source=source)
     if _already_processed(message_key):
         result.duplicate = True
         return result
-    updates, rejected, project_changes = parse_text(text)
-    if not updates and not project_changes and llm is not None and re.search(r"\d", text or ""):
+    updates, rejected, changes = parse_text(text)
+    if not project_changes:
+        changes = []
+    if not updates and not changes and llm is not None and re.search(r"\d", text or ""):
         updates = parse_text_with_llm(text, llm)
         if updates:
             rejected = []
     result.rejected.extend(rejected)
     apply_updates(updates, source, result)
-    for project, pct, line in project_changes:
+    for project, pct, line in changes:
         apply_project_change(project, pct, source, result, line)
     _log_run(result, message_key)
     if rebuild and (result.applied or result.added):

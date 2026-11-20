@@ -317,6 +317,24 @@ def ingest_webhook(body: WebhookIn, x_ingest_token: str | None = Header(default=
     return {**result.as_dict(), "summary": result.summary("ar")}
 
 
+@app.post("/documents", dependencies=staff)
+async def upload_document(file: UploadFile = File(...), source: str = Form("upload")):
+    """Any daily file (PDF, Excel, CSV, Word, TXT, MD, JSON): saved, indexed, prices applied."""
+    from . import documents
+    data = await file.read()
+    try:
+        result = documents.ingest_document(data, file.filename or "document", source=source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {**result.as_dict(), "summary": result.summary("ar")}
+
+
+@app.get("/documents", dependencies=staff)
+def list_documents(limit: int = 50):
+    from . import documents
+    return documents.list_documents(limit)
+
+
 @app.get("/ingest/runs", dependencies=staff)
 def ingest_runs(limit: int = 50):
     return radar.rows("SELECT id,source,message_key,received,applied,held,rejected,created_at FROM ingest_runs "

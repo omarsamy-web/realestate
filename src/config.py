@@ -163,3 +163,7 @@ INGEST_USE_LLM_FALLBACK = _flag("INGEST_USE_LLM_FALLBACK", "1")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_PRICE_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_PRICE_CHAT_IDS", "").split(",") if c.strip()}
 TELEGRAM_REPLY_IN_GROUP = _flag("TELEGRAM_REPLY_IN_GROUP", "1")
+
+# ---- Daily documents (any file sent to the bot) ----
+DOCS_DIR = _resolve_path(os.getenv("DOCS_DIR", "data/documents"))
+MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_MB", "20")) * 1_000_000  # Telegram bots can download up to 20 MB

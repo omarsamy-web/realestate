@@ -124,6 +124,10 @@ def load_all() -> list[Document]:
                 except Exception:
                     pass
 
+    # Daily documents received from the bot / API (data/documents/<date>/...)
+    from .documents import load_documents
+    docs += load_documents()
+
     if not docs:
         raise RuntimeError("No documents found. Check PDF_DIR and SHEET_SOURCE.")
     return docs

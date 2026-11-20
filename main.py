@@ -7,7 +7,7 @@ Real estate CRM + RAG chat with live daily prices + price-group automation.
     python main.py serve                 # HTTP API on :8000 (docs at /docs)
     python main.py telegram              # listen to the Telegram price group
     python main.py ingest --text "PR-101 3,350,000"
-    python main.py ingest --file prices.xlsx
+    python main.py ingest --file today.pdf   # pdf/xlsx/csv/docx/txt
     python main.py build                 # rebuild the RAG index
     python main.py chat                  # terminal chat with memory
     python main.py ask "your question"   # single query
@@ -112,8 +112,14 @@ def cmd_ingest(args):
     from src import price_ingest
     radar.init_db()
     if args.file:
+        from src import documents
         path = Path(args.file)
-        result = price_ingest.ingest_file(path.read_bytes(), path.name, source="cli", rebuild=False)
+        result = documents.ingest_document(path.read_bytes(), path.name, source="cli", rebuild=False)
+        print(result.summary("ar" if args.arabic else "en"))
+        if not result.duplicate and not args.no_rebuild:
+            print("Rebuilding the RAG index...")
+            price_ingest.rebuild_index_now(offline=args.offline)
+        return
     else:
         text = args.text if args.text is not None else sys.stdin.read()
         llm = None if args.offline or args.no_llm else get_llm()
@@ -144,7 +150,7 @@ def run_cli(argv=None):
     i = sub.add_parser("ingest", help="apply a price message or sheet")
     src = i.add_mutually_exclusive_group()
     src.add_argument("--text", help="message text (reads stdin if neither --text nor --file)")
-    src.add_argument("--file", help=".xlsx or .csv price sheet")
+    src.add_argument("--file", help="any daily file: .pdf .xlsx .xls .csv .docx .txt .md .json")
     i.add_argument("--no-llm", action="store_true", help="rule-based parser only")
     i.add_argument("--no-rebuild", action="store_true", help="skip the RAG index rebuild")
     i.add_argument("--arabic", action="store_true", help="print the summary in Arabic")

@@ -1,8 +1,10 @@
 """Telegram price-group listener (Phase 2).
 
-Add the bot to the group where daily prices are posted. Every text message,
-caption, or .xlsx/.csv file in an allowed group is parsed and applied to the
-units table, then the bot replies with a short summary.
+Add the bot to the group where daily prices and files are posted.
+* Text messages: unit price lines are applied to the units table.
+* Any file (PDF, Excel, CSV, Word, TXT, MD, JSON): saved to data/documents/<date>/,
+  added to the RAG knowledge base, and any unit prices inside it are applied.
+The bot replies with a short summary. Commands: /help, /status, /chatid.
 
 Setup:
   1. Create a bot with @BotFather, put the token in TELEGRAM_BOT_TOKEN.
@@ -24,7 +26,6 @@ from . import config, price_ingest, radar
 
 logger = logging.getLogger(__name__)
 API = "https://api.telegram.org"
-SHEET_EXTENSIONS = (".xlsx", ".xls", ".csv")
 
 
 class TelegramClient:
@@ -69,26 +70,72 @@ def _llm():
         return None
 
 
-def handle_message(client: TelegramClient, msg: dict, llm=None) -> price_ingest.IngestResult | None:
+HELP_TEXT = """أنا بوت الأسعار والمستندات 🏠
+• ابعت رسالة أسعار زي:  PR-101 3,350,000  أو  NV-102 محجوزة  أو  زيادة 5% على Palm Residence
+• ابعت أي ملف: PDF، Excel، CSV، Word، TXT. هحفظه وأضيفه لقاعدة المعرفة، ولو فيه أسعار وحدات هحدّثها.
+/status  آخر التحديثات
+/chatid  رقم الجروب (للإعداد)"""
+
+
+def status_text() -> str:
+    from . import documents
+    h = radar.rows("""SELECT (SELECT COUNT(*) FROM units WHERE status='Available') available,
+                             (SELECT COUNT(*) FROM units) total,
+                             (SELECT MAX(changed_at) FROM price_history) last_change,
+                             (SELECT COUNT(*) FROM pending_price_updates WHERE status='Pending') pending""")[0]
+    docs = documents.list_documents(5)
+    lines = [f"🏠 الوحدات المتاحة: {h['available']} من {h['total']}",
+             f"🕒 آخر تغيير سعر: {h['last_change'] or '-'}",
+             f"⏸️ تغييرات مستنية موافقة: {h['pending']}"]
+    if docs:
+        lines.append("📄 آخر الملفات:")
+        lines += [f"  • {d['filename']} ({d['created_at'][:16].replace('T', ' ')})" for d in docs]
+    return "\n".join(lines)
+
+
+def handle_message(client: TelegramClient, msg: dict, llm=None):
     """Process one Telegram message. Returns the ingest result, or None if ignored."""
+    from . import documents
+
     chat_id = str(msg.get("chat", {}).get("id"))
     message_id = msg.get("message_id")
     text = msg.get("text") or msg.get("caption") or ""
+    command = text.strip().split()[0].split("@")[0].lower() if text.strip().startswith("/") else ""
 
-    if text.strip().startswith("/chatid"):
+    if command == "/chatid":
         client.reply(chat_id, message_id, f"chat id: {chat_id}")
         return None
     if chat_id not in config.TELEGRAM_PRICE_CHAT_IDS:
+        return None
+    if command in ("/help", "/start"):
+        client.reply(chat_id, message_id, HELP_TEXT)
+        return None
+    if command == "/status":
+        client.reply(chat_id, message_id, status_text())
         return None
 
     key = f"telegram:{chat_id}:{message_id}"
     source = f"telegram:{msg.get('chat', {}).get('title') or chat_id}"
     doc = msg.get("document")
     try:
-        if doc and str(doc.get("file_name", "")).lower().endswith(SHEET_EXTENSIONS):
-            data = client.download(doc["file_id"])
-            result = price_ingest.ingest_file(data, doc["file_name"], source=source, message_key=key)
-        elif text.strip():
+        if doc:
+            name = doc.get("file_name") or "document"
+            try:
+                documents.kind_of(name)
+            except documents.UnsupportedDocument:
+                client.reply(chat_id, message_id, f"⚠️ مش بقرا النوع ده. ابعت: {', '.join(documents.SUPPORTED)}")
+                return None
+            if doc.get("file_size", 0) > config.MAX_DOCUMENT_BYTES:
+                client.reply(chat_id, message_id, "⚠️ الملف أكبر من 20 ميجا، وتليجرام مش بيسمح للبوت ينزّله.")
+                return None
+            result = documents.ingest_document(client.download(doc["file_id"]), name, source=source, message_key=key)
+            if not result.duplicate:
+                client.reply(chat_id, message_id, result.summary("ar"))
+            return result
+        if msg.get("photo"):
+            client.reply(chat_id, message_id, "📷 الصور مش بتتقري لسه. ابعتها كملف PDF أو Excel.")
+            return None
+        if text.strip() and not command:
             result = price_ingest.ingest_text(text, source=source, message_key=key, llm=llm)
         else:
             return None
