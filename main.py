@@ -20,6 +20,14 @@ Add --offline before the command to test with no API key and no downloads.
 =============================================================================
 """
 
+import os
+
+# OpenBLAS (used by numpy/faiss/scikit-learn) reserves a large memory buffer per CPU thread.
+# On Windows with several bots running this fails with "Memory allocation still failed".
+# One thread per process is plenty for these bots; must be set before numpy is imported.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import argparse
 import logging
 import sys
