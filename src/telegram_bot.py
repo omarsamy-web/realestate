@@ -150,14 +150,165 @@ def handle_message(client: TelegramClient, msg: dict, llm=None):
     return result
 
 
-def run_polling(client: TelegramClient | None = None, once: bool = False) -> None:
-    radar.init_db()
+# --------------------------------------------------------------------------- sales assistant (Phase 4)
+SALES_HELP = """مساعد السيلز 🤝
+/priority [عدد]  مين تكلمه النهاردة (حسب الأولوية)
+/clusters  شرائح العملاء ونصيحة لكل شريحة
+/lead <رقم أو موبايل أو اسم>  ملف العميل
+/recommend <رقم أو موبايل أو اسم>  أنسب الوحدات + رسالة واتساب جاهزة
+/newleads  آخر العملاء اللي جم من الشات بوت
+/ask <سؤال>  سؤال عن المشاريع والأسعار والسياسات
+/status  حالة الوحدات والأسعار"""
+
+_sales_assistant = {}
+
+
+def _sales_answer(question: str) -> str:
+    from .rag import RealEstateAssistant
+    if "bot" not in _sales_assistant:
+        from .indexer import load_index
+        from .llm import get_llm
+        _sales_assistant["bot"] = RealEstateAssistant(load_index(config.OFFLINE_MODE), get_llm(config.OFFLINE_MODE))
+    bot = _sales_assistant["bot"]
+    bot.memory.clear()
+    answer, _, _ = bot.ask(question)
+    return answer
+
+
+def _fmt_profile(p: dict) -> str:
+    budget = f"{p['budget']:,.0f}" if p.get("budget") else "?"
+    lines = [f"👤 {p.get('name')} ({p['lead_key']}) | أولوية {p.get('priority')} | شريحة {p.get('cluster')}",
+             f"📍 {p.get('location') or '?'} | 🏠 {p.get('unit_type') or '?'} | "
+             f"{p['bedrooms'] if p.get('bedrooms') is not None else '?'} غرف | 💰 {budget} | 💳 {p.get('payment') or '?'}",
+             f"📞 {p.get('phone') or '-'} | المسؤول: {p.get('agent') or '-'} | آخر تواصل: {(p.get('last_contact') or '-')[:10]}",
+             f"🏘️ وحدات متاحة مناسبة: {p.get('matching_units') or 0}"]
+    if p.get("objections"):
+        lines.append("⚠️ اعتراضات: " + "، ".join(p["objections"]))
+    if p.get("last_note"):
+        lines.append(f"📝 {p['last_note'][:200]}")
+    if p.get("priority_reasons"):
+        lines.append("ليه الأولوية دي: " + "; ".join(p["priority_reasons"]))
+    return "\n".join(lines)
+
+
+def handle_sales(client: TelegramClient, msg: dict) -> bool:
+    """Sales commands. Returns True if the message was handled."""
+    from . import lead_clustering, sales_agent
+
+    chat_id = str(msg.get("chat", {}).get("id"))
+    if chat_id not in config.TELEGRAM_SALES_CHAT_IDS:
+        return False
+    message_id = msg.get("message_id")
+    text = (msg.get("text") or "").strip()
+    private = msg.get("chat", {}).get("type") == "private"
+    parts = text.split(maxsplit=1)
+    command = parts[0].split("@")[0].lower() if text.startswith("/") else ""
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    reply = None
+    try:
+        if command in ("/help", "/start") and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS:
+            reply = SALES_HELP + "\n\n" + HELP_TEXT
+        elif command == "/priority":
+            n = int(arg) if arg.isdigit() else 10
+            leads = lead_clustering.priority_list(min(n, 30))
+            if not leads:
+                reply = "مافيش بروفايلات لسه. شغّل:  python main.py profile-leads"
+            else:
+                reply = "📞 كلّم دول الأول:\n" + "\n".join(
+                    f"{i}. {p['name']} ({p['lead_key']}) — {p['priority']} | {p.get('location') or '?'} | "
+                    f"{(p['budget'] or 0) / 1e6:.1f}M | {p.get('matching_units') or 0} وحدة مناسبة"
+                    for i, p in enumerate(leads, 1)) + "\n\nللتفاصيل: /recommend <الكود>"
+        elif command == "/clusters":
+            clusters = lead_clustering.list_clusters()
+            if not clusters:
+                reply = "مافيش شرائح لسه. شغّل:  python main.py profile-leads"
+            else:
+                reply = "\n\n".join(f"#{c['cluster']} ({c['size']} عميل) {c['label']}\n💡 {c['playbook']}" for c in clusters)
+        elif command == "/lead":
+            p = lead_clustering.get_profile(arg) if arg else None
+            reply = _fmt_profile(p) if p else "مش لاقي العميل ده. جرّب الكود أو رقم الموبايل."
+        elif command == "/recommend":
+            reply = sales_agent.format_recommendation(sales_agent.recommend_for(arg)) if arg else "اكتب: /recommend <كود العميل>"
+        elif command == "/status":
+            reply = status_text()
+        elif command == "/newleads":
+            leads = radar.rows("SELECT * FROM leads WHERE notes LIKE 'From client chatbot%' ORDER BY id DESC LIMIT 10")
+            reply = "\n".join(f"#{l['id']} {l['name']} | {l['phone']} | {l['area'] or '?'} | "
+                               f"{(l['budget'] or 0) / 1e6:.1f}M | {l['created_at'][:16].replace('T', ' ')}"
+                               for l in leads) or "مافيش عملاء جدد من الشات بوت."
+        elif command == "/ask" or (private and text and not command):
+            question = arg if command == "/ask" else text
+            reply = _sales_answer(question) if question else "اكتب: /ask <سؤالك>"
+        else:
+            return False
+    except ValueError as e:
+        reply = f"⚠️ {e}"
+    except Exception as e:
+        logger.exception("Sales command failed")
+        reply = f"⚠️ حصلت مشكلة: {e}"
+    for i in range(0, len(reply), 3900):
+        client.reply(chat_id, message_id, reply[i:i + 3900])
+    return True
+
+
+def handle_internal(client: TelegramClient, msg: dict, llm=None):
+    """The internal bot serves the price group(s) and the sales team."""
+    if handle_sales(client, msg):
+        return None
+    return handle_message(client, msg, llm)
+
+
+def sales_notifier(client: TelegramClient | None = None):
+    """Function that posts a message to every sales chat (used by the client bot for hand-offs)."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_SALES_CHAT_IDS:
+        return lambda text: logger.info("Sales alert (no sales chat configured): %s", text)
     client = client or TelegramClient(config.TELEGRAM_BOT_TOKEN)
-    if not config.TELEGRAM_PRICE_CHAT_IDS:
-        logger.warning("TELEGRAM_PRICE_CHAT_IDS is empty: send /chatid in your price group, then set it in .env")
-    llm = _llm()
+
+    def notify(text: str):
+        for chat in config.TELEGRAM_SALES_CHAT_IDS:
+            client.call("sendMessage", chat_id=chat, text=text[:4000])
+    return notify
+
+
+# --------------------------------------------------------------------------- client bot (Phase 3)
+CLIENT_WELCOME = ("أهلاً بحضرتك 👋 أنا المساعد العقاري.\n"
+                  "قولّي بتدوّر على إيه: المنطقة، الميزانية، نوع الوحدة وعدد الغرف، وأنا أرشحلك الوحدات المتاحة بأسعار النهاردة.")
+
+
+def handle_client_message(client: TelegramClient, msg: dict, agent) -> dict | None:
+    chat = msg.get("chat", {})
+    if chat.get("type") != "private":
+        return None  # the client bot only talks one-to-one
+    chat_id, message_id = str(chat.get("id")), msg.get("message_id")
+    user = msg.get("from", {})
+    name = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) or None
+    text = (msg.get("text") or "").strip()
+    if msg.get("contact"):
+        text = f"رقمي {msg['contact'].get('phone_number', '')}"
+    if text in ("/start", "/help"):
+        client.reply(chat_id, message_id, CLIENT_WELCOME)
+        return None
+    if text == "/reset":
+        agent.reset("telegram", chat_id)
+        client.reply(chat_id, message_id, "تمام، نبدأ من الأول. بتدوّر على إيه؟")
+        return None
+    if not text or text.startswith("/"):
+        client.reply(chat_id, message_id, "ابعتلي طلبك في رسالة نصية 🙏")
+        return None
+    try:
+        result = agent.handle("telegram", chat_id, text, name=name)
+    except Exception:
+        logger.exception("Client agent failed")
+        client.reply(chat_id, message_id, "معلش حصلت مشكلة، حد من فريقنا هيتواصل معاك قريب.")
+        return None
+    client.reply(chat_id, message_id, result["reply"])
+    return result
+
+
+# --------------------------------------------------------------------------- polling
+def _poll(client: TelegramClient, handle, name: str, once: bool = False) -> None:
     offset = None
-    logger.info("Telegram price listener started")
+    logger.info("%s started", name)
     while True:
         try:
             params = {"timeout": 50, "allowed_updates": ["message", "channel_post"]}
@@ -167,7 +318,7 @@ def run_polling(client: TelegramClient | None = None, once: bool = False) -> Non
                 offset = update["update_id"] + 1
                 msg = update.get("message") or update.get("channel_post")
                 if msg:
-                    handle_message(client, msg, llm)
+                    handle(msg)
         except KeyboardInterrupt:
             break
         except Exception:
@@ -175,3 +326,22 @@ def run_polling(client: TelegramClient | None = None, once: bool = False) -> Non
             time.sleep(5)
         if once:
             break
+
+
+def run_polling(client: TelegramClient | None = None, once: bool = False) -> None:
+    """Internal bot: price groups + sales team."""
+    radar.init_db()
+    client = client or TelegramClient(config.TELEGRAM_BOT_TOKEN)
+    if not config.TELEGRAM_PRICE_CHAT_IDS and not config.TELEGRAM_SALES_CHAT_IDS:
+        logger.warning("Set TELEGRAM_PRICE_CHAT_IDS / TELEGRAM_SALES_CHAT_IDS: send /chatid to the bot to get the id")
+    llm = _llm()
+    _poll(client, lambda m: handle_internal(client, m, llm), "Telegram internal bot (prices + sales)", once)
+
+
+def run_client_bot(client: TelegramClient | None = None, once: bool = False) -> None:
+    """Client bot: a separate bot token that buyers talk to privately."""
+    from .client_agent import build_client_agent
+    radar.init_db()
+    client = client or TelegramClient(config.TELEGRAM_CLIENT_BOT_TOKEN)
+    agent = build_client_agent(notify=sales_notifier())
+    _poll(client, lambda m: handle_client_message(client, m, agent), "Telegram client bot", once)

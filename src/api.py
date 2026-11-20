@@ -361,6 +361,118 @@ def rebuild_index():
     return {"chunks": chunks}
 
 
+# --------------------------------------------------------------------------- client chatbot (Phase 3)
+class ClientChatIn(BaseModel):
+    user_id: str = Field(description="Your stable id for this client (website session, WhatsApp number...)")
+    message: str
+    channel: str = "web"
+    name: str | None = None
+
+
+_client_agent: dict = {}
+
+
+def require_client_key(x_client_key: str | None = Header(default=None)):
+    if config.CLIENT_API_KEY and x_client_key != config.CLIENT_API_KEY:
+        raise HTTPException(401, "Missing or wrong X-Client-Key header")
+
+
+def get_client_agent():
+    if "agent" not in _client_agent:
+        from .client_agent import build_client_agent
+        from .telegram_bot import sales_notifier
+        _client_agent["agent"] = build_client_agent(notify=sales_notifier())
+    return _client_agent["agent"]
+
+
+@app.post("/client/chat", dependencies=[Depends(require_client_key)])
+def client_chat(body: ClientChatIn):
+    """Public chat for buyers (website widget, WhatsApp bridge...). Answers only from company data."""
+    try:
+        agent = get_client_agent()
+    except SystemExit as e:
+        raise HTTPException(503, str(e))
+    return agent.handle(body.channel, body.user_id, body.message, name=body.name)
+
+
+@app.delete("/client/chat/{channel}/{user_id}", dependencies=[Depends(require_client_key)])
+def client_reset(channel: str, user_id: str):
+    get_client_agent().reset(channel, user_id)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- sales assistant (Phase 4)
+_clustering_state = {"running": False, "last": None, "error": None}
+
+
+def _run_clustering(notes_path, k):
+    from . import lead_clustering
+    try:
+        result = lead_clustering.run_clustering(notes_path, k)
+        _clustering_state.update(last={"leads": result["leads"], "k": result["k"], "at": radar.now()}, error=None)
+    except Exception as e:  # surfaced on GET /sales/clusters/status
+        logger.exception("Clustering failed")
+        _clustering_state["error"] = str(e)
+    finally:
+        _clustering_state["running"] = False
+
+
+@app.post("/sales/clusters/run", dependencies=staff)
+def run_clusters(include_notes_file: bool = True, k: int | None = None):
+    """Rebuild lead profiles, clusters and priorities in the background (about 2 minutes for 100k notes)."""
+    if _clustering_state["running"]:
+        return {"started": False, "reason": "already running"}
+    from pathlib import Path as _P
+    notes = config.SALES_NOTES_FILE if include_notes_file and _P(config.SALES_NOTES_FILE).exists() else None
+    _clustering_state["running"] = True
+    threading.Thread(target=_run_clustering, args=(notes, k), daemon=True).start()
+    return {"started": True, "notes_file": notes}
+
+
+@app.get("/sales/clusters/status", dependencies=staff)
+def clusters_status():
+    return _clustering_state
+
+
+@app.get("/sales/clusters", dependencies=staff)
+def get_clusters():
+    from . import lead_clustering
+    return lead_clustering.list_clusters()
+
+
+@app.get("/sales/priority", dependencies=staff)
+def get_priority(limit: int = Query(20, le=500), cluster: int | None = None, agent: str | None = None):
+    from . import lead_clustering
+    return lead_clustering.priority_list(limit, cluster, agent)
+
+
+@app.get("/sales/leads/{key}", dependencies=staff)
+def get_lead_profile(key: str):
+    from . import lead_clustering
+    p = lead_clustering.get_profile(key)
+    if not p:
+        raise HTTPException(404, "Lead profile not found (run POST /sales/clusters/run first)")
+    return p
+
+
+@app.get("/sales/leads/{key}/recommendations", dependencies=staff)
+def get_recommendations(key: str, k: int = Query(5, le=20)):
+    from . import sales_agent
+    try:
+        return sales_agent.recommend_for(key, k)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+class SalesAskIn(BaseModel):
+    question: str
+
+
+@app.post("/sales/ask", dependencies=staff)
+def sales_ask(body: SalesAskIn):
+    return chat(ChatIn(message=body.question))
+
+
 # --------------------------------------------------------------------------- research lab
 @app.post("/research", dependencies=staff)
 async def research(file: UploadFile = File(...), task: str = Form("")):

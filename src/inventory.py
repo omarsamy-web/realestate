@@ -37,12 +37,12 @@ def parse_amount(raw: str) -> float | None:
     if raw is None:
         return None
     text = normalize_digits(str(raw)).strip().lower().replace("٬", ",").replace("،", ",")
-    m = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*(m\b|mn\b|million|مليون|k\b|الف|ألف)?", text)
+    m = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*(m\b|mil\b|mn\b|million|مليون|k\b|الف|ألف)?", text)
     if not m:
         return None
     number = float(m.group(1).replace(",", ""))
     unit = m.group(2) or ""
-    if unit in ("m", "mn", "million", "مليون"):
+    if unit in ("m", "mil", "mn", "million", "مليون"):
         number *= 1_000_000
     elif unit in ("k", "الف", "ألف"):
         number *= 1_000

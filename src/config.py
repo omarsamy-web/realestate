@@ -167,3 +167,11 @@ TELEGRAM_REPLY_IN_GROUP = _flag("TELEGRAM_REPLY_IN_GROUP", "1")
 # ---- Daily documents (any file sent to the bot) ----
 DOCS_DIR = _resolve_path(os.getenv("DOCS_DIR", "data/documents"))
 MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_MB", "20")) * 1_000_000  # Telegram bots can download up to 20 MB
+
+# ---- Phase 3: client chatbot ----
+TELEGRAM_CLIENT_BOT_TOKEN = os.getenv("TELEGRAM_CLIENT_BOT_TOKEN", "").strip()  # a separate bot for clients
+CLIENT_API_KEY = os.getenv("CLIENT_API_KEY", "").strip()  # if set, POST /client/chat needs X-Client-Key
+
+# ---- Phase 4: sales assistant ----
+TELEGRAM_SALES_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_SALES_CHAT_IDS", "").split(",") if c.strip()}
+SALES_NOTES_FILE = _resolve_path(os.getenv("SALES_NOTES_FILE", "data/xlsx/sales_notes.xlsx"))

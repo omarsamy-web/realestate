@@ -92,3 +92,20 @@ def test_telegram_sheet_file(client, monkeypatch):
     tg = FakeTelegram({"f1": csv})
     msg = {"message_id": 9, "chat": {"id": -100}, "document": {"file_id": "f1", "file_name": "today.csv"}}
     assert telegram_bot.handle_message(tg, msg).prices.applied
+
+
+def test_client_and_sales_endpoints(client, monkeypatch):
+    monkeypatch.setattr(config, "CLIENT_API_KEY", "")
+    api._client_agent.clear()
+    r = client.post("/client/chat", json={"user_id": "w1", "message": "عايز شقة في التجمع 2 غرف تحت 6 مليون"}).json()
+    assert r["units"][0]["unit_id"] == "PR-102"
+    r = client.post("/client/chat", json={"user_id": "w1", "message": "رقمي 01055555555"}).json()
+    assert r["lead_id"]
+    from src import lead_clustering
+    lead_clustering.run_clustering(None, k=2)
+    assert client.get("/sales/clusters").json()
+    top = client.get("/sales/priority", params={"limit": 3}).json()
+    assert len(top) == 3
+    rec = client.get(f"/sales/leads/{r['lead_id']}/recommendations").json()
+    assert rec["units"] and rec["whatsapp_draft"]
+    api._client_agent.clear()

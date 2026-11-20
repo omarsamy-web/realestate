@@ -5,7 +5,10 @@ RADAR PLATFORM — ENTRYPOINT
 Real estate CRM + RAG chat with live daily prices + price-group automation.
 
     python main.py serve                 # HTTP API on :8000 (docs at /docs)
-    python main.py telegram              # listen to the Telegram price group
+    python main.py telegram              # internal bot: price group + sales team
+    python main.py client-bot            # client bot (separate token)
+    python main.py profile-leads         # lead profiles, clusters, call priority
+    python main.py recommend 4           # best units + WhatsApp draft for a lead
     python main.py ingest --text "PR-101 3,350,000"
     python main.py ingest --file today.pdf   # pdf/xlsx/csv/docx/txt
     python main.py build                 # rebuild the RAG index
@@ -130,6 +133,33 @@ def cmd_ingest(args):
         price_ingest.rebuild_index_now(offline=args.offline)
 
 
+def cmd_client_bot(args):
+    from src.telegram_bot import run_client_bot
+    if args.offline:
+        config.OFFLINE_MODE = True
+    run_client_bot()
+
+
+def cmd_profile_leads(args):
+    from src import lead_clustering
+    notes = args.notes or (config.SALES_NOTES_FILE if Path(config.SALES_NOTES_FILE).exists() else None)
+    print(f"Profiling CRM leads{' + ' + notes if notes else ''} ...")
+    result = lead_clustering.run_clustering(notes, args.k)
+    print(f"{result['leads']} leads in {result['k']} clusters\n")
+    for c in result["clusters"]:
+        print(f"#{c['cluster']:<2} {c['size']:>6} leads  {c['label']}")
+        print(f"     -> {c['playbook']}")
+    print("\nTop leads to call:")
+    for p in lead_clustering.priority_list(10):
+        print(f"  {p['priority']:>3}  {p['lead_key']:<16} {p.get('location') or '?':<16} {p.get('matching_units') or 0} matching units")
+
+
+def cmd_recommend(args):
+    from src import sales_agent
+    radar.init_db()
+    print(sales_agent.format_recommendation(sales_agent.recommend_for(args.lead, args.k)))
+
+
 def run_cli(argv=None):
     ap = argparse.ArgumentParser(description="RADAR Platform CLI", formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--offline", action="store_true", help="no API key / no downloads (testing only)")
@@ -155,6 +185,15 @@ def run_cli(argv=None):
     i.add_argument("--no-rebuild", action="store_true", help="skip the RAG index rebuild")
     i.add_argument("--arabic", action="store_true", help="print the summary in Arabic")
     i.set_defaults(fn=cmd_ingest)
+    sub.add_parser("client-bot", help="run the Telegram bot for clients").set_defaults(fn=cmd_client_bot)
+    pl = sub.add_parser("profile-leads", help="build lead profiles, clusters and call priority")
+    pl.add_argument("notes", nargs="?", help="sales notes .xlsx/.csv (default: SALES_NOTES_FILE)")
+    pl.add_argument("--k", type=int, help="number of clusters (default: chosen automatically)")
+    pl.set_defaults(fn=cmd_profile_leads)
+    r = sub.add_parser("recommend", help="best units + WhatsApp draft for a lead")
+    r.add_argument("lead", help="lead key, CRM id, phone or name")
+    r.add_argument("--k", type=int, default=5)
+    r.set_defaults(fn=cmd_recommend)
     args = ap.parse_args(argv)
     args.fn(args)
 

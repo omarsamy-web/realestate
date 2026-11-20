@@ -60,6 +60,10 @@ Unified RADAR Platform
 | `src/price_ingest.py` | Parses daily price messages/sheets, applies them with history and approvals |
 | `src/telegram_bot.py` | Telegram price-group listener (long polling) |
 | `src/documents.py` | Stores every daily file, indexes it for RAG, applies prices inside it |
+| `src/client_agent.py` | Client chatbot: requirements, grounded answers, lead capture, sales hand-off |
+| `src/requirements_extract.py` | Arabic/English/Franco requirement extraction from chats and notes |
+| `src/lead_clustering.py` | Lead profiles, KMeans clusters with playbooks, call priority |
+| `src/sales_agent.py` | Per-lead unit recommendations, talking points, WhatsApp drafts |
 | `app.py` | CLI alias redirecting to `main.py` |
 | `src/config.py` | Unified configuration (LLM providers, paths, limits) |
 | `src/radar.py` | CRM domain services and SQLite data layer |
@@ -140,6 +144,43 @@ curl -X POST http://localhost:8000/ingest/webhook \
 python main.py ingest --text "PR-101 3,350,000"
 python main.py ingest --file "today prices.xlsx"
 ```
+
+## Phase 4 · Client chatbot (talks to buyers)
+
+A **separate Telegram bot** for clients (`TELEGRAM_CLIENT_BOT_TOKEN`, run `python main.py client-bot`),
+or any channel through `POST /client/chat` (website widget, WhatsApp bridge).
+
+* Answers **only** from company data: today's prices from the units table and the documents in the
+  knowledge base. It never invents units, prices or offers, and never shows internal notes or other clients.
+* Learns the client's requirements as they chat (area, budget, type, bedrooms, cash/installments) in Arabic,
+  English or Franco, and asks one question at a time for what is missing.
+* Recommends up to 3 available units that fit, relaxing the filters if nothing matches exactly.
+* When the client shares a phone number (or the Telegram "share contact" button), they become a CRM lead
+  with their requirements and consent, and the sales team gets an alert. Asking for a call also alerts sales.
+
+## Phase 5 · Sales assistant and CRM clustering
+
+```bash
+python main.py profile-leads           # profiles + clusters + call priority (~2 min for 100k notes)
+python main.py recommend 4             # best units for a lead + WhatsApp draft
+```
+
+* **Lead profiles:** every lead's notes (`SALES_NOTES_FILE`, plus CRM and client-bot leads) become
+  structured fields: budget, area, bedrooms, type, payment, down payment, objections (price, installments,
+  down payment, delivery, maintenance, comparing, developer trust), engagement, last contact.
+* **Clusters:** KMeans picks the number of segments. Each gets a readable label such as
+  `New Cairo · Apartment · 3BR · ~6.1M · installments · objection: short installments` and a playbook.
+* **Priority (0-100):** who to call first, with the reasons (engagement, recency, budget known, how many
+  available units match right now, unreachable, not in a hurry, lost).
+* **Recommendations:** the best available units per lead with a fit score, why each fits, recent price drops,
+  talking points for the lead's objections, a next action, and a ready WhatsApp message.
+
+**Sales bot:** the internal bot also serves the sales team. Put the sales group (or each salesperson's
+private chat id) in `TELEGRAM_SALES_CHAT_IDS`. Commands: `/priority`, `/clusters`, `/lead <id>`,
+`/recommend <id>`, `/newleads`, `/ask <question>`, `/status`. In a private chat any message is a question.
+
+API: `POST /sales/clusters/run`, `GET /sales/clusters`, `GET /sales/priority`, `GET /sales/leads/{key}`,
+`GET /sales/leads/{key}/recommendations`, `POST /sales/ask`, `POST /client/chat`.
 
 ## Configuration
 
