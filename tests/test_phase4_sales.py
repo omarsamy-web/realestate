@@ -168,3 +168,17 @@ def test_three_bots_are_separate(temp_db, monkeypatch):
     telegram_bot.handle_sales_bot(tg, {"message_id": 7, "chat": stranger, "text": "/chatid"})
     assert tg.replies[-1] == "chat id: 300"
     telegram_bot._sales_assistant.clear()
+
+
+def test_less_than_is_a_maximum_not_a_minimum(temp_db):
+    from src import sales_units
+    for q in ("عايز اعرف ايه اليونتس الموجوده اقل من 10 مليون", "هات الاقل من 15 مليون",
+              "هات اليونتس الاقل من 15000000", "units less than 10 million", "تحت 10 مليون"):
+        f = sales_units.filters_from(q)
+        assert f.get("max_price") in (10_000_000, 15_000_000) and "min_price" not in f, (q, f)
+        rows, _ = sales_units.query(f)
+        assert rows and all(r["price"] <= f["max_price"] for r in rows)
+    f = sales_units.filters_from("من 5 مليون لـ 8 مليون")
+    assert f["min_price"] == 5_000_000 and f["max_price"] == 8_000_000
+    f = sales_units.filters_from("أكتر من 7 مليون")
+    assert f["min_price"] == 7_000_000 and "max_price" not in f

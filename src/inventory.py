@@ -78,7 +78,7 @@ def extract_filters(question: str) -> dict:
         filters["bedrooms"] = int(beds.group(1))
 
     budget = re.search(
-        r"(?:budget|under|below|max|up to|ميزانية|ميزانيتي|تحت|اقل من|أقل من|لحد|حدود)\s*(?:of|is|:)?\s*"
+        r"(?:budget|under|below|less than|lower than|max|up to|ميزانية|ميزانيتي|تحت|اقل من|أقل من|الاقل من|الأقل من|لحد|حدود)\s*(?:of|is|:)?\s*"
         r"(\d[\d,.]*\s*(?:m\b|million|مليون|k\b|الف|ألف)?)", q)
     if budget:
         filters["max_price"] = parse_amount(budget.group(1))

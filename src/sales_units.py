@@ -62,8 +62,26 @@ def filters_from(question: str) -> dict:
         f["max_price"] = req["budget"]
     if req.get("budget_min"):
         f["min_price"] = req["budget_min"]
-    m = re.search(r"(?:over|above|more than|فوق|أكتر من|اكتر من|من)\s*(\d[\d,.]*\s*(?:m\b|million|مليون|k\b|الف|ألف)?)", q)
-    if m and not re.search(r"(تحت|لحد|under|below|max)", q[:m.start()][-15:]):
+    amount = r"\d[\d,.]*\s*(?:m\b|mil\b|million|مليون|k\b|الف|ألف)?"
+    rng = re.search(rf"(?:من|from|between|بين)\s*({amount})\s*(?:لـ|ل|الى|إلى|لحد|to|-|و|and)\s*({amount})", q)
+    if rng:
+        a, b = rng.group(1), rng.group(2)
+        unit = re.search(r"(m\b|mil\b|million|مليون|k\b|الف|ألف)", b)
+        if unit and not re.search(r"(m\b|mil\b|million|مليون|k\b|الف|ألف)", a):
+            a += " " + unit.group(1)
+        lo, hi = inventory.parse_amount(a), inventory.parse_amount(b)
+        if lo and hi and max(lo, hi) >= 100_000:
+            f["min_price"], f["max_price"] = min(lo, hi), max(lo, hi)
+    # "more than / over" only; "أقل من" (less than) must never become a minimum price
+    m = re.search(r"(?<![\w])(?:over|above|more than|greater than|starting from|from|فوق|أكتر من|اكتر من|أكثر من|اكثر من|"
+                  r"أعلى من|اعلى من|يبدأ من|بداية من|من)\s*(\d[\d,.]*\s*(?:m\b|million|مليون|k\b|الف|ألف)?)", q)
+    if m and m.group(0).strip().startswith(("من", "from")):
+        before = q[:m.start()].rstrip()
+        if re.search(r"(أقل|اقل|less|lower|تحت|مش أكتر|مش اكتر)$", before) or not re.search(r"(?:لـ|ل|الى|إلى|to|-)\s*\d", q[m.end():]):
+            m = None  # bare "من X" without a range is not a minimum (e.g. "أقل من 10 مليون")
+    if rng:
+        m = None
+    if m and not re.search(r"(تحت|لحد|under|below|max|أقل|اقل|less)", q[:m.start()][-15:]):
         v = inventory.parse_amount(m.group(1))
         if v and v >= 100_000:
             f["min_price"] = v

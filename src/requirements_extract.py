@@ -76,7 +76,8 @@ def _first_match(text: str, table: dict) -> str | None:
 
 def _budget(text: str) -> tuple[float | None, float | None]:
     """Return (min, max). 'budget 4.8 to 5.9 million' -> (4.8M, 5.9M); 'budget max 6.26M' -> (None, 6.26M)."""
-    cue = r"(?:budget|الميزانية|ميزانية|ميزانيتي|في حدود|حوالي|7awaly|around|max|up to|لحد|تحت|under|مش أكتر من|مش اكتر من)"
+    cue = (r"(?:budget|الميزانية|ميزانية|ميزانيتي|في حدود|حوالي|7awaly|around|max|up to|لحد|تحت|under|below|"
+           r"less than|lower than|أقل من|اقل من|مش أكتر من|مش اكتر من|ما يزيدش عن|مايزيدش عن)")
     rng = re.search(rf"{cue}[^\d]{{0,25}}({_AMOUNT})\s*(?:to|-|الى|إلى|لـ|ل)\s*({_AMOUNT})", text)
     if rng:
         a, b = rng.group(1), rng.group(2)
