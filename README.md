@@ -145,18 +145,23 @@ python main.py ingest --text "PR-101 3,350,000"
 python main.py ingest --file "today prices.xlsx"
 ```
 
-## Two separate chatbots
+## Three separate Telegram bots
 
-| | Client bot | Sales bot |
-|---|---|---|
-| Run | `python main.py client-bot` | `python main.py telegram` |
-| Token | `TELEGRAM_CLIENT_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` |
-| Sees | today's units (max 3 per answer) + brochures/policies | **all** units: search, counts, price ranges, history |
-| CRM | none (unless `CLIENT_SAVE_LEADS=1`) | none (unless `SALES_CRM_ACCESS=1`) |
-| Refuses | full lists, files, spreadsheets, other clients | – |
+| | Main bot | Sales bot | Client bot |
+|---|---|---|---|
+| Run | `python main.py telegram` | `python main.py sales-bot` | `python main.py client-bot` |
+| Token | `TELEGRAM_BOT_TOKEN` | `TELEGRAM_SALES_BOT_TOKEN` | `TELEGRAM_CLIENT_BOT_TOKEN` |
+| Who | you / admins (`TELEGRAM_ADMIN_CHAT_IDS`) + price groups (`TELEGRAM_PRICE_CHAT_IDS`) | sales team (`TELEGRAM_SALES_CHAT_IDS`) | any buyer, private chat |
+| Daily data in (prices, files) | ✅ | ❌ | ❌ |
+| Units it can see | all | all | max 3 per answer |
+| CRM | if `SALES_CRM_ACCESS=1` | if `SALES_CRM_ACCESS=1` | none (unless `CLIENT_SAVE_LEADS=1`) |
 
-Sales bot examples (just type the question): `فلل التجمع تحت 20 مليون`, `كام وحدة متاحة في Rai Valleys`,
-`أرخص شقة 3 غرف في زايد`, `تاريخ سعر PR-101`. Commands: `/units`, `/unit`, `/projects`, `/status`.
+All three chat naturally and remember the conversation. In the main bot's admin chat, a message with
+unit price lines (`PR-101 3,300,000`) is applied as a price update; anything else is answered as a question.
+In groups, the main and sales bots answer when you @mention them or reply to them.
+
+Sales bot examples: `فلل التجمع تحت 20 مليون`, `كام وحدة متاحة في Rai Valleys`, `وفي زايد؟`,
+`تاريخ سعر PR-101`. Commands: `/units`, `/unit`, `/projects`, `/status`, `/reset`.
 
 ## Phase 4 · Client chatbot (talks to buyers)
 

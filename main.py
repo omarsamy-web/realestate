@@ -5,8 +5,9 @@ RADAR PLATFORM — ENTRYPOINT
 Real estate CRM + RAG chat with live daily prices + price-group automation.
 
     python main.py serve                 # HTTP API on :8000 (docs at /docs)
-    python main.py telegram              # internal bot: price group + sales team
+    python main.py telegram              # main bot: daily data + admin chat
     python main.py client-bot            # client bot (separate token)
+    python main.py sales-bot             # sales bot (separate token, all units)
     python main.py profile-leads         # lead profiles, clusters, call priority
     python main.py recommend 4           # best units + WhatsApp draft for a lead
     python main.py ingest --text "PR-101 3,350,000"
@@ -140,6 +141,13 @@ def cmd_client_bot(args):
     run_client_bot()
 
 
+def cmd_sales_bot(args):
+    from src.telegram_bot import run_sales_bot
+    if args.offline:
+        config.OFFLINE_MODE = True
+    run_sales_bot()
+
+
 def cmd_profile_leads(args):
     from src import lead_clustering
     notes = args.notes or (config.SALES_NOTES_FILE if Path(config.SALES_NOTES_FILE).exists() else None)
@@ -186,6 +194,7 @@ def run_cli(argv=None):
     i.add_argument("--arabic", action="store_true", help="print the summary in Arabic")
     i.set_defaults(fn=cmd_ingest)
     sub.add_parser("client-bot", help="run the Telegram bot for clients").set_defaults(fn=cmd_client_bot)
+    sub.add_parser("sales-bot", help="run the Telegram bot for the sales team").set_defaults(fn=cmd_sales_bot)
     pl = sub.add_parser("profile-leads", help="build lead profiles, clusters and call priority")
     pl.add_argument("notes", nargs="?", help="sales notes .xlsx/.csv (default: SALES_NOTES_FILE)")
     pl.add_argument("--k", type=int, help="number of clusters (default: chosen automatically)")

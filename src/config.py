@@ -179,3 +179,11 @@ CLIENT_SAVE_LEADS = _flag("CLIENT_SAVE_LEADS", "0")     # 0 = client bot has no 
 CLIENT_MAX_UNITS = int(os.getenv("CLIENT_MAX_UNITS", "3"))  # most units the client bot shows at once
 CLIENT_CONTACT_TEXT = os.getenv("CLIENT_CONTACT_TEXT", "").strip()  # e.g. "Call us on 0100 000 0000"
 SALES_CRM_ACCESS = _flag("SALES_CRM_ACCESS", "0")       # 0 = sales bot sees units only, no lead commands
+
+# ---- Three bots ----
+# 1) main/admin bot (TELEGRAM_BOT_TOKEN): receives the daily data in TELEGRAM_PRICE_CHAT_IDS and
+#    chats with full access in TELEGRAM_ADMIN_CHAT_IDS
+# 2) client bot (TELEGRAM_CLIENT_BOT_TOKEN): buyers, no CRM, max 3 units
+# 3) sales bot (TELEGRAM_SALES_BOT_TOKEN): sales team in TELEGRAM_SALES_CHAT_IDS, all units, read only
+TELEGRAM_SALES_BOT_TOKEN = os.getenv("TELEGRAM_SALES_BOT_TOKEN", "").strip()
+TELEGRAM_ADMIN_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_ADMIN_CHAT_IDS", "").split(",") if c.strip()}

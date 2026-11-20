@@ -136,3 +136,35 @@ def test_sales_bot_answers_mentions_in_group(temp_db, monkeypatch):
     telegram_bot.handle_internal(tg, {"message_id": 2, "chat": chat, "text": "و 3 غرف؟", "reply_to_message": bot_msg})
     assert "NV-301" in tg.replies[-1]
     telegram_bot._sales_assistant.clear()
+
+
+def test_three_bots_are_separate(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "OFFLINE_MODE", True)
+    monkeypatch.setattr(config, "TELEGRAM_SALES_BOT_TOKEN", "sales-token")
+    monkeypatch.setattr(config, "TELEGRAM_SALES_CHAT_IDS", {"200"})
+    monkeypatch.setattr(config, "TELEGRAM_ADMIN_CHAT_IDS", {"100"})
+    monkeypatch.setattr(config, "TELEGRAM_PRICE_CHAT_IDS", {"100"})
+    telegram_bot._sales_assistant.clear()
+    tg = FakeTelegram()
+    admin, sales, stranger = ({"id": i, "type": "private"} for i in (100, 200, 300))
+
+    # main bot, admin chat: price lines are ingested, questions are answered
+    telegram_bot.handle_internal(tg, {"message_id": 1, "chat": admin, "text": "PR-101 3,300,000"})
+    assert temp_db.rows("SELECT price FROM units WHERE unit_id='PR-101'")[0]["price"] == 3_300_000
+    telegram_bot.handle_internal(tg, {"message_id": 2, "chat": admin, "text": "شقق زايد"})
+    assert "NV-" in tg.replies[-1]
+    # main bot ignores the sales chat now that a separate sales bot exists
+    n = len(tg.replies)
+    telegram_bot.handle_internal(tg, {"message_id": 3, "chat": sales, "text": "شقق زايد"})
+    assert len(tg.replies) == n
+
+    # sales bot: answers the sales team from all units, never ingests
+    telegram_bot.handle_sales_bot(tg, {"message_id": 4, "chat": sales, "text": "شقق التجمع"})
+    assert "PR-" in tg.replies[-1]
+    telegram_bot.handle_sales_bot(tg, {"message_id": 5, "chat": sales, "text": "PR-102 1,000,000"})
+    assert temp_db.rows("SELECT price FROM units WHERE unit_id='PR-102'")[0]["price"] == 5_100_000
+    telegram_bot.handle_sales_bot(tg, {"message_id": 6, "chat": stranger, "text": "شقق التجمع"})
+    assert "لفريق المبيعات" in tg.replies[-1]
+    telegram_bot.handle_sales_bot(tg, {"message_id": 7, "chat": stranger, "text": "/chatid"})
+    assert tg.replies[-1] == "chat id: 300"
+    telegram_bot._sales_assistant.clear()

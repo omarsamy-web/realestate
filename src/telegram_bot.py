@@ -241,12 +241,22 @@ def _fmt_profile(p: dict) -> str:
     return "\n".join(lines)
 
 
-def handle_sales(client: TelegramClient, msg: dict) -> bool:
-    """Sales commands. Returns True if the message was handled."""
+def looks_like_price_update(text: str) -> bool:
+    """True when a plain message contains unit price lines (so it should be ingested, not answered)."""
+    try:
+        updates, _, changes = price_ingest.parse_text(text)
+    except Exception:
+        return False
+    return bool(updates or changes)
+
+
+def handle_sales(client: TelegramClient, msg: dict, allowed: set | None = None, can_ingest: bool = False) -> bool:
+    """Assistant commands and questions. Returns True if the message was handled."""
     from . import lead_clustering, sales_agent, sales_units
 
     chat_id = str(msg.get("chat", {}).get("id"))
-    if chat_id not in config.TELEGRAM_SALES_CHAT_IDS:
+    allowed = config.TELEGRAM_SALES_CHAT_IDS if allowed is None else allowed
+    if chat_id not in allowed:
         return False
     message_id = msg.get("message_id")
     text = (msg.get("text") or "").strip()
@@ -298,7 +308,9 @@ def handle_sales(client: TelegramClient, msg: dict) -> bool:
         elif command in ("/reset", "/new"):
             _sales_bot().reset(chat_id)
             reply = "تمام، بدأنا محادثة جديدة."
-        elif command == "/ask" or (private and text and not command and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS) \
+        elif command == "/ask" or (private and text and not command
+                                   and not (can_ingest and chat_id in config.TELEGRAM_PRICE_CHAT_IDS
+                                            and looks_like_price_update(text))) \
                 or (not private and not command and _addressed_to_bot(msg)):
             question = arg if command == "/ask" else (text if private else _addressed_to_bot(msg))
             reply = _sales_answer(question, session=chat_id) if question else "اكتب: /ask <سؤالك>"
@@ -314,18 +326,40 @@ def handle_sales(client: TelegramClient, msg: dict) -> bool:
     return True
 
 
+def _admin_chats() -> set:
+    # without a separate sales bot, the sales chats keep using the main bot
+    return config.TELEGRAM_ADMIN_CHAT_IDS | (set() if config.TELEGRAM_SALES_BOT_TOKEN else config.TELEGRAM_SALES_CHAT_IDS)
+
+
 def handle_internal(client: TelegramClient, msg: dict, llm=None):
-    """The internal bot serves the price group(s) and the sales team."""
-    if handle_sales(client, msg):
+    """Main bot: receives the daily data (price chats) and answers admins with full access."""
+    if handle_sales(client, msg, allowed=_admin_chats(), can_ingest=True):
         return None
     return handle_message(client, msg, llm)
 
 
+def handle_sales_bot(client: TelegramClient, msg: dict):
+    """Sales bot: all units, read only. It never ingests data and ignores chats it doesn't know."""
+    chat_id = str(msg.get("chat", {}).get("id"))
+    text = (msg.get("text") or "").strip()
+    if text.startswith("/chatid"):
+        client.reply(chat_id, msg.get("message_id"), f"chat id: {chat_id}")
+        return None
+    if handle_sales(client, msg, allowed=config.TELEGRAM_SALES_CHAT_IDS, can_ingest=False):
+        return None
+    if msg.get("chat", {}).get("type") == "private" and chat_id not in config.TELEGRAM_SALES_CHAT_IDS:
+        client.reply(chat_id, msg.get("message_id"), "البوت ده لفريق المبيعات بس. ابعت /chatid للمسؤول عشان يضيفك.")
+    elif msg.get("document") and chat_id in config.TELEGRAM_SALES_CHAT_IDS:
+        client.reply(chat_id, msg.get("message_id"), "البوت ده للاستفسار بس. الملفات والأسعار بتتبعت على البوت الأساسي.")
+    return None
+
+
 def sales_notifier(client: TelegramClient | None = None):
     """Function that posts a message to every sales chat (used by the client bot for hand-offs)."""
-    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_SALES_CHAT_IDS:
+    token = config.TELEGRAM_SALES_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN
+    if not token or not config.TELEGRAM_SALES_CHAT_IDS:
         return lambda text: logger.info("Sales alert (no sales chat configured): %s", text)
-    client = client or TelegramClient(config.TELEGRAM_BOT_TOKEN)
+    client = client or TelegramClient(token)
 
     def notify(text: str):
         for chat in config.TELEGRAM_SALES_CHAT_IDS:
@@ -408,10 +442,24 @@ def run_polling(client: TelegramClient | None = None, once: bool = False) -> Non
     """Internal bot: price groups + sales team."""
     radar.init_db()
     client = client or TelegramClient(config.TELEGRAM_BOT_TOKEN)
-    if not config.TELEGRAM_PRICE_CHAT_IDS and not config.TELEGRAM_SALES_CHAT_IDS:
-        logger.warning("Set TELEGRAM_PRICE_CHAT_IDS / TELEGRAM_SALES_CHAT_IDS: send /chatid to the bot to get the id")
+    if not config.TELEGRAM_PRICE_CHAT_IDS and not _admin_chats():
+        logger.warning("Set TELEGRAM_PRICE_CHAT_IDS / TELEGRAM_ADMIN_CHAT_IDS: send /chatid to the bot to get the id")
     llm = _llm()
-    _poll(client, lambda m: handle_internal(client, m, llm), "Telegram internal bot (prices + sales)", once)
+    _poll(client, lambda m: handle_internal(client, m, llm), "Main bot (daily data + admin chat)", once)
+
+
+def run_sales_bot(client: TelegramClient | None = None, once: bool = False) -> None:
+    """Sales bot: a third, separate bot for the sales team with access to all units."""
+    token = config.TELEGRAM_SALES_BOT_TOKEN
+    if not token:
+        raise SystemExit("Set TELEGRAM_SALES_BOT_TOKEN in .env (a third bot from @BotFather).")
+    if token in (config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CLIENT_BOT_TOKEN):
+        raise SystemExit("TELEGRAM_SALES_BOT_TOKEN must be a different bot from the main and client bots.")
+    radar.init_db()
+    client = client or TelegramClient(token)
+    if not config.TELEGRAM_SALES_CHAT_IDS:
+        logger.warning("TELEGRAM_SALES_CHAT_IDS is empty: each salesperson sends /chatid to the sales bot, add the ids")
+    _poll(client, lambda m: handle_sales_bot(client, m), "Sales bot (all units)", once)
 
 
 def run_client_bot(client: TelegramClient | None = None, once: bool = False) -> None:
@@ -419,8 +467,8 @@ def run_client_bot(client: TelegramClient | None = None, once: bool = False) -> 
     from .client_agent import build_client_agent
     if not config.TELEGRAM_CLIENT_BOT_TOKEN:
         raise SystemExit("Set TELEGRAM_CLIENT_BOT_TOKEN in .env (a second bot from @BotFather, not the internal one).")
-    if config.TELEGRAM_CLIENT_BOT_TOKEN == config.TELEGRAM_BOT_TOKEN:
-        raise SystemExit("TELEGRAM_CLIENT_BOT_TOKEN must be a different bot from TELEGRAM_BOT_TOKEN.")
+    if config.TELEGRAM_CLIENT_BOT_TOKEN in (config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_SALES_BOT_TOKEN):
+        raise SystemExit("TELEGRAM_CLIENT_BOT_TOKEN must be a different bot from the main and sales bots.")
     radar.init_db()
     client = client or TelegramClient(config.TELEGRAM_CLIENT_BOT_TOKEN)
     # fully separate by default: no CRM, no messages to the sales bot
