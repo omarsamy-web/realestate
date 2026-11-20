@@ -106,3 +106,33 @@ def test_sales_units_filters_and_stats(temp_db):
     assert sold["count"] == 2
     price_ingest.ingest_text("PR-101 3,300,000", source="test")
     assert "3,300,000" in sales_units.unit_details("pr-101")
+
+
+def test_sales_assistant_remembers_and_follows_up(temp_db):
+    from src.offline import OfflineLLM
+    from src.sales_units import SalesUnitsAssistant
+    bot = SalesUnitsAssistant(OfflineLLM())
+    r1 = bot.answer("شقق التجمع تحت 6 مليون", session="s1")
+    assert {u["unit_id"] for u in r1["units"]} == {"PR-101", "PR-102"}
+    r2 = bot.answer("و 2 غرف؟", session="s1")                      # follow-up keeps New Cairo + budget
+    assert [u["unit_id"] for u in r2["units"]] == ["PR-102"]
+    r3 = bot.answer("وفي زايد؟", session="s1")                      # swaps the area, keeps the rest
+    assert r3["filters"]["location"] == "Sheikh Zayed" and all(u["location"] == "Sheikh Zayed" for u in r3["units"])
+    other = bot.answer("وفي زايد؟", session="s2")                   # another chat starts fresh
+    assert other["filters"].get("bedrooms") is None
+    bot.reset("s1")
+    assert bot.answer("كل الوحدات المتاحة", session="s1")["stats"]["count"] == 9  # all available sample units
+
+
+def test_sales_bot_answers_mentions_in_group(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "TELEGRAM_SALES_CHAT_IDS", {"-9"})
+    monkeypatch.setattr(config, "OFFLINE_MODE", True)
+    telegram_bot._sales_assistant.clear()
+    telegram_bot._me.update({"username": "XLR8_chatbot"})
+    tg, chat = FakeTelegram(), {"id": -9, "type": "group"}
+    telegram_bot.handle_internal(tg, {"message_id": 1, "chat": chat, "text": "@XLR8_chatbot شقق زايد"})
+    assert "NV-" in tg.replies[-1]
+    bot_msg = {"from": {"is_bot": True, "username": "XLR8_chatbot"}}
+    telegram_bot.handle_internal(tg, {"message_id": 2, "chat": chat, "text": "و 3 غرف؟", "reply_to_message": bot_msg})
+    assert "NV-301" in tg.replies[-1]
+    telegram_bot._sales_assistant.clear()

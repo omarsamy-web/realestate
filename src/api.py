@@ -466,6 +466,7 @@ def get_recommendations(key: str, k: int = Query(5, le=20)):
 
 class SalesAskIn(BaseModel):
     question: str
+    session_id: str = "api"
 
 
 _sales_units: dict = {}
@@ -477,7 +478,7 @@ def sales_ask(body: SalesAskIn):
     from .sales_units import build_sales_assistant
     if "bot" not in _sales_units:
         _sales_units["bot"] = build_sales_assistant()
-    return _sales_units["bot"].answer(body.question)
+    return _sales_units["bot"].answer(body.question, session=body.session_id)
 
 
 @app.get("/sales/units", dependencies=staff)

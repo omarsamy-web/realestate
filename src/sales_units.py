@@ -10,7 +10,7 @@ import re
 import statistics
 
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from . import inventory, radar
 from .requirements_extract import extract
@@ -25,17 +25,27 @@ SORT_EXPENSIVE = ("most expensive", "highest price", "أغلى", "اغلى")
 
 SALES_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "You are the internal inventory assistant for the sales team of an Egyptian real-estate company. "
-     "The salesperson has full access to the units inventory.\n"
-     "- Answer ONLY from the query results below; they come live from the units database.\n"
-     "- Give exact numbers: counts, price ranges, unit codes, prices, sizes. Never invent anything.\n"
-     "- When listing units, use one compact line per unit: code | project | type | bedrooms | sqm | price | status.\n"
-     "- Reply in the salesperson's language (Egyptian Arabic if they write Arabic). Be direct.\n\n"
-     "Filters understood from the question: {filters}\n\n"
+     "You are a smart, friendly assistant for the sales team of an Egyptian real-estate company, chatting "
+     "with a salesperson like a helpful colleague. The salesperson has FULL access to the units inventory, "
+     "so share everything that helps: exact counts, price ranges per project, cheapest/most expensive "
+     "options, unit codes, sizes, statuses and price history.\n"
+     "- Understand what they mean and answer the actual question first, naturally. Use the conversation "
+     "history for follow-ups ('and in Zayed?', 'the cheaper one?', 'what about 3 bedrooms?').\n"
+     "- Use ONLY the query results and documents below; they come live from the database. Never invent "
+     "units, prices or offers. If something is not in the data, say so.\n"
+     "- When listing units, one compact line each: code | project | type | bedrooms | sqm | price | status. "
+     "List up to {max_list} units; if there are more, say how many and suggest how to narrow down.\n"
+     "- You may suggest what to pitch (e.g. the best value per sqm, or recent price drops) when useful.\n"
+     "- Reply in the salesperson's language and dialect (Egyptian Arabic if they write Arabic).\n\n"
+     "Filters used for this question: {filters}\n\n"
      "Summary:\n{summary}\n\n"
-     "Context:\n{rows}"),
+     "Context:\n{docs}\n\n{rows}"),
+    MessagesPlaceholder("history"),
     ("human", "{question}"),
 ])
+FOLLOW_UP = re.compile(r"^\s*(و|طب|طيب|وفي|وف|and|what about|how about|same|نفس|بس|طب لو|ولو)", re.I)
+FILTER_KEYS = ("projects", "unit_ids", "location", "type", "bedrooms", "max_price", "min_price")
+HISTORY_TURNS = 6
 
 
 def filters_from(question: str) -> dict:
@@ -159,29 +169,68 @@ def list_units(question: str, limit: int = 15) -> str:
 
 
 class SalesUnitsAssistant:
-    def __init__(self, llm):
-        self.chain = SALES_PROMPT | llm | StrOutputParser()
+    """Conversational sales assistant with full read access to the units table.
 
-    def answer(self, question: str) -> dict:
+    Keeps a short memory per chat, so follow-ups ("وفي زايد؟", "and 3 bedrooms?") reuse the
+    previous search and only change what the salesperson changed."""
+
+    def __init__(self, llm, retriever=None, max_list: int = 15):
+        self.chain = SALES_PROMPT | llm | StrOutputParser()
+        self.retriever = retriever
+        self.max_list = max_list
+        self.sessions: dict[str, dict] = {}
+
+    def reset(self, session: str = "default"):
+        self.sessions.pop(session, None)
+
+    def _filters(self, question: str, prev: dict | None) -> dict:
+        f = filters_from(question)
+        own = {k: f[k] for k in FILTER_KEYS if f.get(k) not in (None, "", [])}
+        words = len(question.split())
+        if prev and (FOLLOW_UP.search(question) or (own and words <= 5) or (not own and words <= 6)):
+            merged = {k: prev.get(k) for k in FILTER_KEYS if prev.get(k) not in (None, "", [])}
+            if "projects" in own or "location" in own:
+                merged.pop("unit_ids", None)
+            merged.update(own)
+            merged["status"] = f["status"] if f["status"] != "Available" else prev.get("status", "Available")
+            merged["sort"] = f["sort"] if f["sort"] == "desc" else prev.get("sort", "asc")
+            return merged
+        return f
+
+    def answer(self, question: str, session: str = "default") -> dict:
+        from langchain_core.messages import AIMessage, HumanMessage
+        s = self.sessions.setdefault(session, {"history": [], "filters": None})
         ids = re.findall(r"\b[A-Za-z]{1,6}-\d{1,5}[A-Za-z]?\b", question)
         if ids and re.search(r"(history|تاريخ|اتغير|changes)", question, re.I):
-            details = [unit_details(i) for i in ids]
-            text = "\n\n".join(d for d in details if d) or "Unit not found."
+            text = "\n\n".join(d for d in (unit_details(i) for i in ids) if d) or "Unit not found."
+            s["history"] += [question, text]
             return {"answer": text, "units": [], "stats": None}
-        f = filters_from(question)
+        f = self._filters(question, s["filters"])
         rows, stats = query(f)
+        docs = self.retriever.invoke(question) if self.retriever is not None else []
+        docs = [d for d in docs if d.metadata.get("type") == "pdf"][:3]
         shown = {k: v for k, v in f.items() if v not in (None, "", []) and k != "sort"}
+        history = [HumanMessage(m) if i % 2 == 0 else AIMessage(m)
+                   for i, m in enumerate(s["history"][-2 * HISTORY_TURNS:])]
         answer = self.chain.invoke({
             "filters": shown or "(none — whole inventory)",
             "summary": summary_text(stats),
-            "rows": "\n".join(unit_line(u) for u in rows) or "(no rows)",
-            "question": question,
+            "docs": "\n".join(f"[{d.metadata.get('source')}] {d.page_content}" for d in docs) or "(no documents)",
+            "rows": "Units:\n" + ("\n".join(unit_line(u) for u in rows) or "(no rows)"),
+            "history": history, "question": question, "max_list": self.max_list,
         }).strip()
-        return {"answer": answer, "units": rows, "stats": stats}
+        s["filters"] = f
+        s["history"] += [question, answer]
+        return {"answer": answer, "units": rows, "stats": stats, "filters": shown}
 
 
 def build_sales_assistant(offline: bool | None = None) -> SalesUnitsAssistant:
     from . import config
     from .llm import get_llm
     offline = config.OFFLINE_MODE if offline is None else offline
-    return SalesUnitsAssistant(get_llm(offline))
+    try:
+        from .indexer import load_index
+        retriever = load_index(offline).as_retriever(search_kwargs={"k": 6})
+    except Exception:
+        retriever = None
+    return SalesUnitsAssistant(get_llm(offline), retriever)

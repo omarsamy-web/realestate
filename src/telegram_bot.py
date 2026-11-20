@@ -18,6 +18,7 @@ Uses long polling, so it needs no public URL and runs on any machine.
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 import httpx
@@ -183,7 +184,9 @@ SALES_HELP = """مساعد السيلز 🤝 (عنده كل الوحدات)
 /units <بحث>  الوحدات المطابقة من غير ذكاء اصطناعي
 /unit <كود>  تفاصيل وحدة وتاريخ سعرها
 /projects  ملخص كل المشاريع
-/status  حالة الأسعار والملفات"""
+/status  حالة الأسعار والملفات
+/reset  محادثة جديدة
+في الجروب: اعمل منشن للبوت أو رد على رسالته عشان يرد عليك."""
 
 CRM_HELP = """
 أوامر الـ CRM:
@@ -196,11 +199,30 @@ CRM_HELP = """
 _sales_assistant = {}
 
 
-def _sales_answer(question: str) -> str:
+def _sales_bot():
     from .sales_units import build_sales_assistant
     if "bot" not in _sales_assistant:
         _sales_assistant["bot"] = build_sales_assistant()
-    return _sales_assistant["bot"].answer(question)["answer"]
+    return _sales_assistant["bot"]
+
+
+def _sales_answer(question: str, session: str = "default") -> str:
+    return _sales_bot().answer(question, session=session)["answer"]
+
+
+def _addressed_to_bot(msg: dict) -> str | None:
+    """In a group: the question text if the bot was @mentioned or replied to, else None."""
+    text = (msg.get("text") or "").strip()
+    reply_to = (msg.get("reply_to_message") or {}).get("from") or {}
+    if reply_to.get("is_bot") and reply_to.get("username") == _me.get("username"):
+        return text
+    name = _me.get("username")
+    if name and f"@{name}".lower() in text.lower():
+        return re.sub(rf"@{re.escape(name)}", "", text, flags=re.I).strip()
+    return None
+
+
+_me: dict = {}
 
 
 def _fmt_profile(p: dict) -> str:
@@ -273,9 +295,13 @@ def handle_sales(client: TelegramClient, msg: dict) -> bool:
                                for l in leads) or "مافيش عملاء جدد من الشات بوت."
         elif command == "/status":
             reply = status_text()
-        elif command == "/ask" or (private and text and not command and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS):
-            question = arg if command == "/ask" else text
-            reply = _sales_answer(question) if question else "اكتب: /ask <سؤالك>"
+        elif command in ("/reset", "/new"):
+            _sales_bot().reset(chat_id)
+            reply = "تمام، بدأنا محادثة جديدة."
+        elif command == "/ask" or (private and text and not command and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS) \
+                or (not private and not command and _addressed_to_bot(msg)):
+            question = arg if command == "/ask" else (text if private else _addressed_to_bot(msg))
+            reply = _sales_answer(question, session=chat_id) if question else "اكتب: /ask <سؤالك>"
         else:
             return False
     except ValueError as e:
@@ -347,6 +373,7 @@ def _poll(client: TelegramClient, handle, name: str, once: bool = False) -> None
     offset = None
     try:
         me = client.call("getMe")
+        _me.update(me if isinstance(me, dict) else {})
         # a webhook left over from another tool blocks polling; long polling needs it removed
         client.call("deleteWebhook", drop_pending_updates=False)
         logger.info("%s started as @%s", name, me.get("username"))
