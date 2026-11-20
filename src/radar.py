@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import config
 
-DB_PATH = Path(config.ROOT_DIR) / "data" / "radar.db"
+DB_PATH = Path(config.DB_PATH)
 STATUSES = ("New", "Contacted", "Interested", "Viewing", "Reserved", "Closed", "Lost")
 
 
@@ -114,6 +114,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY, lead_id INTEGER REFERENCES leads(id),
           field TEXT, value TEXT, confidence REAL, evidence TEXT, source TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS price_history (
+          id INTEGER PRIMARY KEY, unit_id TEXT NOT NULL, old_price REAL, new_price REAL,
+          old_status TEXT, new_status TEXT, source TEXT NOT NULL, changed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS price_history_unit ON price_history(unit_id, changed_at);
+        CREATE TABLE IF NOT EXISTS ingest_runs (
+          id INTEGER PRIMARY KEY, source TEXT NOT NULL, message_key TEXT UNIQUE, received INTEGER NOT NULL,
+          applied INTEGER NOT NULL, held INTEGER NOT NULL, rejected INTEGER NOT NULL,
+          details TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_price_updates (
+          id INTEGER PRIMARY KEY, unit_id TEXT NOT NULL, old_price REAL, new_price REAL, new_status TEXT,
+          reason TEXT NOT NULL, source TEXT NOT NULL, status TEXT DEFAULT 'Pending', created_at TEXT NOT NULL
+        );
         """)
         db.execute("INSERT OR IGNORE INTO settings VALUES ('kill_switch','0')")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('autonomy','1')")
@@ -205,12 +219,14 @@ def import_units(file_bytes, filename):
             if old:
                 prev = (old["project"], old["location"], old["type"], old["bedrooms"], old["area"], old["price"], old["status"], old["delivery_year"])
                 if prev != vals:
+                    record_price_change(db, key, old["price"], vals[5], old["status"], vals[6], f"import:{filename}")
                     db.execute("UPDATE units SET project=?,location=?,type=?,bedrooms=?,area=?,price=?,status=?,delivery_year=?,updated_at=? WHERE unit_id=?", (*vals, now(), key))
                     db.execute("INSERT INTO events(unit_id,kind,details,created_at) VALUES((SELECT id FROM units WHERE unit_id=?),'Unit updated',?,?,?)", (key, f"{key} updated from import", now()))
                     create_opportunities(db, key, "unit_updated")
                     changed += 1
             else:
                 db.execute("INSERT INTO units(unit_id,project,location,type,bedrooms,area,price,status,delivery_year,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (key, *vals, now()))
+                record_price_change(db, key, None, vals[5], None, vals[6], f"import:{filename}")
                 db.execute("INSERT INTO events(unit_id,kind,details,created_at) VALUES((SELECT id FROM units WHERE unit_id=?),'Unit added',?,?,?)", (key, f"{key} added from import", now()))
                 create_opportunities(db, key, "new_unit")
                 changed += 1
@@ -264,7 +280,21 @@ def add_note(lead_id,note):
                 db.execute(f"UPDATE leads SET {col}=? WHERE id=?",(float(value) if field=="budget" else int(value),lead_id))
 
 
-def update_unit(unit_key, price, status):
+def record_price_change(db, unit_key, old_price, new_price, old_status, new_status, source):
+    """Append one row to the price/status history so every change stays auditable."""
+    if old_price == new_price and old_status == new_status:
+        return
+    db.execute(
+        "INSERT INTO price_history(unit_id,old_price,new_price,old_status,new_status,source,changed_at) VALUES(?,?,?,?,?,?,?)",
+        (unit_key, old_price, new_price, old_status, new_status, source, now()),
+    )
+
+
+def price_history(unit_key):
+    return rows("SELECT * FROM price_history WHERE unit_id=? ORDER BY changed_at DESC, id DESC", (unit_key,))
+
+
+def update_unit(unit_key, price, status, source="manual"):
     with connect() as db:
         u=db.execute("SELECT * FROM units WHERE unit_id=?",(unit_key,)).fetchone()
         if not u: raise ValueError("Unit not found")
@@ -272,6 +302,8 @@ def update_unit(unit_key, price, status):
         if price is not None and float(price)!=u["price"]: changes.append(("price",u["price"],float(price)))
         if status and status!=u["status"]: changes.append(("status",u["status"],status))
         if not changes:return 0
+        new_price = float(price) if price is not None else u["price"]
+        record_price_change(db, unit_key, u["price"], new_price, u["status"], status or u["status"], source)
         db.execute("UPDATE units SET price=?,status=?,updated_at=? WHERE unit_id=?",(float(price) if price is not None else u["price"],status or u["status"],now(),unit_key))
         db.execute("INSERT INTO events(unit_id,kind,details,created_at) VALUES(?,?,?,?)",(u["id"],"Unit changed","; ".join(f"{k}: {a} -> {b}" for k,a,b in changes),now()))
         return create_opportunities(db,unit_key,"price_drop" if any(k=="price" and b<a for k,a,b in changes) else "unit_updated")

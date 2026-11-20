@@ -34,8 +34,12 @@ def _fake_llm(prompt_value):
     system, question = msgs[0].content, msgs[-1].content
     if "standalone search query" in system:
         return AIMessage(question)
+    live = ""
+    if "Live inventory (from the units database):\n" in system:
+        live = system.split("Live inventory (from the units database):\n", 1)[1].split("\n\nContext:", 1)[0]
+        live = "" if live.startswith("(no matching units)") else live + "\n"
     ctx = system.split("Context:\n", 1)[-1]
-    return AIMessage("[OFFLINE MODE - top retrieved context]\n" + ctx[:900])
+    return AIMessage("[OFFLINE MODE - top retrieved context]\n" + live + ctx[:900])
 
 
 def OfflineLLM():

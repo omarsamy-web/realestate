@@ -2,7 +2,7 @@
 
 > **Unified Real Estate CRM + RAG Chat + Multi-Agent Research Lab**
 
-This project combines three capabilities into a single Streamlit application:
+This project combines three capabilities behind one HTTP API (FastAPI) and CLI:
 
 1. **RADAR CRM** — lead management, explainable opportunity matching, inventory tracking, bilingual drafts, human approval workflow, consent checks, kill switch, and audit trail.
 2. **RAG Chat Assistant** — PDF and spreadsheet knowledge base with conversation memory, follow-up resolution, and source citations.
@@ -14,7 +14,9 @@ Run the entire platform from a single clean file:
 
 ```bash
 pip install -r requirements.txt
-streamlit run main.py
+python main.py build          # build the RAG index once
+python main.py serve          # API on http://localhost:8000, try it at /docs
+python main.py telegram       # listen to the daily price group (see below)
 ```
 
 Or run the CLI commands from the same file:
@@ -52,9 +54,12 @@ Unified RADAR Platform
 
 | Path | Purpose |
 |---|---|
-| `main.py` | **Unified application entrypoint** (Streamlit dashboard + CLI) |
+| `main.py` | **Unified entrypoint** (CLI: serve, telegram, ingest, build, chat, ask) |
+| `src/api.py` | FastAPI service: units, leads, opportunities, chat, price ingest, research |
+| `src/inventory.py` | Live unit search; feeds current prices into every chat answer |
+| `src/price_ingest.py` | Parses daily price messages/sheets, applies them with history and approvals |
+| `src/telegram_bot.py` | Telegram price-group listener (long polling) |
 | `app.py` | CLI alias redirecting to `main.py` |
-| `radar_app.py` | Streamlit alias redirecting to `main.py` |
 | `src/config.py` | Unified configuration (LLM providers, paths, limits) |
 | `src/radar.py` | CRM domain services and SQLite data layer |
 | `src/crm_workflow.py` | LangGraph CRM opportunity orchestrator |
@@ -70,6 +75,58 @@ Unified RADAR Platform
 | `eval/` | Evaluation framework and test set |
 | `tests/` | Pytest wiring and integration tests |
 | `generated_reports/` | Saved research reports |
+
+## Phase 3 · Live prices and daily price automation
+
+Unit prices change every day, so they live in the `units` table, not in the vector index.
+
+* **Chat answers use live prices.** Every question is matched against the units table
+  (unit code, project, area, bedrooms, budget, in Arabic or English) and the matching rows are
+  added to the prompt as `[live inventory]` with their last-updated time. The prompt tells the
+  model that live inventory beats any price written in a brochure.
+* **Price history.** Every change is stored in `price_history` with its source
+  (`GET /units/{unit_id}/history`).
+* **Ingestion from the price group.** Messages like these are understood:
+
+  ```
+  PR-101 3,350,000
+  NV-102 : 3.7 مليون
+  PR-102 محجوزة
+  Rai Valleys - 88 - 129 - E  18,300,000
+  زيادة 5% على Nile View Towers
+  ```
+
+  An `.xlsx`/`.csv` sheet posted in the group is applied row by row (new units are added).
+  Free-form messages the rules can't read go to the LLM, whose answer is checked so it can't
+  invent unit codes.
+* **Safety.** A change bigger than `PRICE_CHANGE_HOLD_PCT` (25% by default) is held until someone
+  approves it (`GET /ingest/pending`, `POST /ingest/pending/{id}/decision`). Unknown units are
+  rejected and reported. The same message is never applied twice.
+* After each update the CRM opportunity agents run (price drops create opportunities) and the RAG
+  index is rebuilt in the background.
+
+### Telegram setup
+1. Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN`.
+2. In @BotFather run `/setprivacy` → Disable, so the bot can read group messages.
+3. Add the bot to the price group and send `/chatid`. Put the number in `TELEGRAM_PRICE_CHAT_IDS`.
+4. Run `python main.py telegram`. The bot replies in the group with what it changed.
+
+### WhatsApp
+WhatsApp's official API can't read group messages. Use any automation that can forward the
+group's messages (n8n, Make, a forwarding number, or an unofficial WhatsApp Web bridge, which
+risks a ban) to the webhook:
+
+```bash
+curl -X POST http://localhost:8000/ingest/webhook \
+  -H "X-Ingest-Token: $INGEST_WEBHOOK_TOKEN" -H "Content-Type: application/json" \
+  -d '{"source": "whatsapp", "message_id": "abc123", "text": "PR-101 3,350,000"}'
+```
+
+### Manual ingestion
+```bash
+python main.py ingest --text "PR-101 3,350,000"
+python main.py ingest --file "today prices.xlsx"
+```
 
 ## Configuration
 
@@ -146,4 +203,4 @@ python -m eval.evaluate --offline  # retrieval check only
 
 ## Tested With
 
-langchain 1.4.9, langchain-core 1.7.6, langchain-community 0.4.2, langgraph 1.x, PyMuPDF 1.24+, Streamlit 1.36+.
+langchain 1.4.9, langchain-core 1.7.6, langchain-community 0.4.2, langgraph 1.x, PyMuPDF 1.24+, FastAPI 0.110+.

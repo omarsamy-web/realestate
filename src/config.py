@@ -143,3 +143,23 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 LLM_CHUNK_CHAR_LIMIT = int(os.getenv("LLM_CHUNK_CHAR_LIMIT", "24000"))
 REPORTS_DIR = _resolve_path(os.getenv("REPORTS_DIR", "generated_reports"))
+
+
+def _flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---- Phase 1: API service ----
+DB_PATH = _resolve_path(os.getenv("RADAR_DB", "data/radar.db"))
+OFFLINE_MODE = _flag("OFFLINE_MODE")          # hashed embeddings + echo LLM, for testing only
+API_KEY = os.getenv("API_KEY", "").strip()    # if set, staff endpoints need header X-API-Key
+CHAT_SESSION_TTL_MIN = int(os.getenv("CHAT_SESSION_TTL_MIN", "120"))
+
+# ---- Phase 2: daily price ingestion ----
+PRICE_CHANGE_HOLD_PCT = float(os.getenv("PRICE_CHANGE_HOLD_PCT", "25"))  # bigger jumps wait for approval
+AUTO_REBUILD_INDEX = _flag("AUTO_REBUILD_INDEX", "1")
+INGEST_WEBHOOK_TOKEN = os.getenv("INGEST_WEBHOOK_TOKEN", "").strip()
+INGEST_USE_LLM_FALLBACK = _flag("INGEST_USE_LLM_FALLBACK", "1")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_PRICE_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_PRICE_CHAT_IDS", "").split(",") if c.strip()}
+TELEGRAM_REPLY_IN_GROUP = _flag("TELEGRAM_REPLY_IN_GROUP", "1")

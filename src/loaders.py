@@ -71,16 +71,47 @@ def load_sheet(source: str = config.SHEET_SOURCE, max_rows: int = config.MAX_RAG
     return docs
 
 
+def load_units_from_db() -> list[Document]:
+    """One document per unit from the live units table (refreshed after every price ingest)."""
+    from . import radar
+    if not Path(radar.DB_PATH).exists():
+        return []
+    try:
+        units = radar.rows("SELECT * FROM units ORDER BY project, unit_id")
+    except Exception:
+        return []
+    docs = []
+    for u in units:
+        text = (f"Unit ID: {u['unit_id']}; Project: {u['project']}; Location: {u['location']}; "
+                f"Type: {u['type']}; Bedrooms: {u['bedrooms']}; Area (sqm): {u['area']:g}; "
+                f"Price (EGP): {u['price']:,.0f}; Status: {u['status']}; "
+                f"Delivery Year: {u['delivery_year']}; Price updated: {u['updated_at']}")
+        docs.append(Document(page_content=text,
+                             metadata={"source": "units database", "row": u["unit_id"], "type": "sheet"}))
+    return docs
+
+
+def _is_unit_sheet(path: Path) -> bool:
+    return "unit" in path.name.lower()
+
+
 def load_all() -> list[Document]:
     docs = load_pdfs()
     csv_file = Path(config.SHEET_SOURCE)
-    if csv_file.exists():
+    db_units = load_units_from_db()
+    if db_units:
+        # Unit prices change daily: index the current database snapshot instead of
+        # the original spreadsheets, so the index never serves yesterday's prices.
+        docs += db_units
+    elif csv_file.exists():
         docs += load_sheet(str(csv_file))
 
     # Also load any additional spreadsheets in data/xlsx
     xlsx_dir = Path(config.ROOT_DIR) / "data" / "xlsx"
     if xlsx_dir.exists():
         for f in sorted(xlsx_dir.glob("*.xlsx")):
+            if db_units and _is_unit_sheet(f):
+                continue
             if f.name != csv_file.name:
                 try:
                     docs += load_sheet(str(f))
