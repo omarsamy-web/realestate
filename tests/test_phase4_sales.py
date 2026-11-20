@@ -66,6 +66,7 @@ class FakeTelegram:
 def test_sales_bot_commands(temp_db, tmp_path, monkeypatch):
     lead_clustering.run_clustering(notes_file(tmp_path), k=3)
     monkeypatch.setattr(config, "TELEGRAM_SALES_CHAT_IDS", {"-9"})
+    monkeypatch.setattr(config, "SALES_CRM_ACCESS", True)
     tg, chat = FakeTelegram(), {"id": -9, "type": "group"}
     for i, cmd in enumerate(["/priority 3", "/clusters", "/lead 1000", "/recommend 1000", "/newleads", "/status"]):
         assert telegram_bot.handle_internal(tg, {"message_id": i, "chat": chat, "text": cmd}) is None
@@ -75,3 +76,33 @@ def test_sales_bot_commands(temp_db, tmp_path, monkeypatch):
     # ordinary chatter in the sales group is ignored (not treated as prices or questions)
     assert telegram_bot.handle_internal(tg, {"message_id": 99, "chat": chat, "text": "صباح الخير"}) is None
     assert len(tg.replies) == 6
+
+
+def test_sales_bot_is_units_only_by_default(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "TELEGRAM_SALES_CHAT_IDS", {"55"})
+    monkeypatch.setattr(config, "OFFLINE_MODE", True)
+    telegram_bot._sales_assistant.clear()
+    tg, chat = FakeTelegram(), {"id": 55, "type": "private"}
+    telegram_bot.handle_internal(tg, {"message_id": 1, "chat": chat, "text": "/priority"})
+    assert "مقفول" in tg.replies[-1]
+    telegram_bot.handle_internal(tg, {"message_id": 2, "chat": chat, "text": "/units شقق التجمع تحت 6 مليون"})
+    assert "PR-101" in tg.replies[-1] and "PR-102" in tg.replies[-1] and "PR-104" not in tg.replies[-1]
+    telegram_bot.handle_internal(tg, {"message_id": 3, "chat": chat, "text": "/unit PR-101"})
+    assert "Palm Residence" in tg.replies[-1]
+    telegram_bot.handle_internal(tg, {"message_id": 4, "chat": chat, "text": "/projects"})
+    assert "Nile View Towers" in tg.replies[-1]
+    telegram_bot.handle_internal(tg, {"message_id": 5, "chat": chat, "text": "كام وحدة متاحة في زايد؟"})
+    assert "NV-101" in tg.replies[-1]   # free-text question answered from the units table
+    telegram_bot._sales_assistant.clear()
+
+
+def test_sales_units_filters_and_stats(temp_db):
+    from src import sales_units
+    f = sales_units.filters_from("أغلى شقق 3 غرف في التجمع فوق 7 مليون")
+    assert f["location"] == "New Cairo" and f["bedrooms"] == 3 and f["min_price"] == 7_000_000 and f["sort"] == "desc"
+    rows, stats = sales_units.query(f)
+    assert [r["unit_id"] for r in rows] == ["PR-104"] and stats["count"] == 1
+    _, sold = sales_units.query(sales_units.filters_from("الوحدات المباعة"))
+    assert sold["count"] == 2
+    price_ingest.ingest_text("PR-101 3,300,000", source="test")
+    assert "3,300,000" in sales_units.unit_details("pr-101")

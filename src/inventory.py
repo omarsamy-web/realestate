@@ -21,10 +21,10 @@ LOCATION_ALIASES = {
 }
 
 TYPE_ALIASES = {
-    "apartment": "Apartment", "شقة": "Apartment", "شقه": "Apartment",
-    "villa": "Villa", "فيلا": "Villa", "townhouse": "Townhouse", "تاون": "Townhouse",
+    "apartment": "Apartment", "شقة": "Apartment", "شقه": "Apartment", "شقق": "Apartment",
+    "villa": "Villa", "فيلا": "Villa", "فلل": "Villa", "townhouse": "Townhouse", "تاون": "Townhouse",
     "studio": "Studio", "استوديو": "Studio", "ستوديو": "Studio",
-    "duplex": "Duplex", "دوبلكس": "Duplex", "chalet": "Chalet", "شاليه": "Chalet",
+    "duplex": "Duplex", "دوبلكس": "Duplex", "chalet": "Chalet", "شاليه": "Chalet", "شاليهات": "Chalet",
 }
 
 

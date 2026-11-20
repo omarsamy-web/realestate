@@ -26,14 +26,14 @@ LOCATIONS = {
 }
 
 TYPES = {
-    "Apartment": ["apartment", "apatrment", "appartment", "flat", "شقة", "شقه"],
-    "Villa": ["villa", "فيلا", "standalone"],
-    "Townhouse": ["townhouse", "town house", "تاون"],
+    "Apartment": ["apartment", "apartments", "apatrment", "appartment", "flat", "flats", "شقة", "شقه", "شقق"],
+    "Villa": ["villa", "villas", "فيلا", "فلل", "فيلات", "standalone"],
+    "Townhouse": ["townhouse", "townhouses", "town house", "تاون"],
     "Twin House": ["twin house", "twinhouse", "توين"],
     "Duplex": ["duplex", "دوبلكس"],
     "Penthouse": ["penthouse", "بنتهاوس"],
-    "Chalet": ["chalet", "شاليه"],
-    "Studio": ["studio", "tudio", "ستوديو", "استوديو"],
+    "Chalet": ["chalet", "chalets", "شاليه", "شاليهات"],
+    "Studio": ["studio", "studios", "tudio", "ستوديو", "استوديو", "استوديوهات"],
 }
 
 OBJECTIONS = {

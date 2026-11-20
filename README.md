@@ -145,6 +145,19 @@ python main.py ingest --text "PR-101 3,350,000"
 python main.py ingest --file "today prices.xlsx"
 ```
 
+## Two separate chatbots
+
+| | Client bot | Sales bot |
+|---|---|---|
+| Run | `python main.py client-bot` | `python main.py telegram` |
+| Token | `TELEGRAM_CLIENT_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` |
+| Sees | today's units (max 3 per answer) + brochures/policies | **all** units: search, counts, price ranges, history |
+| CRM | none (unless `CLIENT_SAVE_LEADS=1`) | none (unless `SALES_CRM_ACCESS=1`) |
+| Refuses | full lists, files, spreadsheets, other clients | – |
+
+Sales bot examples (just type the question): `فلل التجمع تحت 20 مليون`, `كام وحدة متاحة في Rai Valleys`,
+`أرخص شقة 3 غرف في زايد`, `تاريخ سعر PR-101`. Commands: `/units`, `/unit`, `/projects`, `/status`.
+
 ## Phase 4 · Client chatbot (talks to buyers)
 
 A **separate Telegram bot** for clients (`TELEGRAM_CLIENT_BOT_TOKEN`, run `python main.py client-bot`),

@@ -175,3 +175,7 @@ CLIENT_API_KEY = os.getenv("CLIENT_API_KEY", "").strip()  # if set, POST /client
 # ---- Phase 4: sales assistant ----
 TELEGRAM_SALES_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_SALES_CHAT_IDS", "").split(",") if c.strip()}
 SALES_NOTES_FILE = _resolve_path(os.getenv("SALES_NOTES_FILE", "data/xlsx/sales_notes.xlsx"))
+CLIENT_SAVE_LEADS = _flag("CLIENT_SAVE_LEADS", "0")     # 0 = client bot has no CRM access at all
+CLIENT_MAX_UNITS = int(os.getenv("CLIENT_MAX_UNITS", "3"))  # most units the client bot shows at once
+CLIENT_CONTACT_TEXT = os.getenv("CLIENT_CONTACT_TEXT", "").strip()  # e.g. "Call us on 0100 000 0000"
+SALES_CRM_ACCESS = _flag("SALES_CRM_ACCESS", "0")       # 0 = sales bot sees units only, no lead commands

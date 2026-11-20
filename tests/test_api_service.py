@@ -96,6 +96,7 @@ def test_telegram_sheet_file(client, monkeypatch):
 
 def test_client_and_sales_endpoints(client, monkeypatch):
     monkeypatch.setattr(config, "CLIENT_API_KEY", "")
+    monkeypatch.setattr(config, "CLIENT_SAVE_LEADS", True)
     api._client_agent.clear()
     r = client.post("/client/chat", json={"user_id": "w1", "message": "عايز شقة في التجمع 2 غرف تحت 6 مليون"}).json()
     assert r["units"][0]["unit_id"] == "PR-102"

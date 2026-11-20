@@ -381,7 +381,7 @@ def get_client_agent():
     if "agent" not in _client_agent:
         from .client_agent import build_client_agent
         from .telegram_bot import sales_notifier
-        _client_agent["agent"] = build_client_agent(notify=sales_notifier())
+        _client_agent["agent"] = build_client_agent(notify=sales_notifier() if config.CLIENT_SAVE_LEADS else None)
     return _client_agent["agent"]
 
 
@@ -468,9 +468,23 @@ class SalesAskIn(BaseModel):
     question: str
 
 
+_sales_units: dict = {}
+
+
 @app.post("/sales/ask", dependencies=staff)
 def sales_ask(body: SalesAskIn):
-    return chat(ChatIn(message=body.question))
+    """Sales inventory assistant: full access to the units table."""
+    from .sales_units import build_sales_assistant
+    if "bot" not in _sales_units:
+        _sales_units["bot"] = build_sales_assistant()
+    return _sales_units["bot"].answer(body.question)
+
+
+@app.get("/sales/units", dependencies=staff)
+def sales_units_search(q: str = "", limit: int = Query(50, le=500)):
+    from . import sales_units
+    rows, stats = sales_units.query(sales_units.filters_from(q), limit)
+    return {"stats": stats, "units": rows}
 
 
 # --------------------------------------------------------------------------- research lab

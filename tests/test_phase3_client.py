@@ -29,7 +29,8 @@ def test_conversation_builds_requirements_and_answers_from_live_units(temp_db):
     assert not notes and r2["lead_id"] is None
 
 
-def test_phone_creates_lead_and_alerts_sales_once(temp_db):
+def test_phone_creates_lead_and_alerts_sales_once(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "CLIENT_SAVE_LEADS", True)
     notes = []
     a = agent(notes)
     a.handle("telegram", "u2", "عايز شقة في زايد 3 غرف تحت 8 مليون", name="Sara")
@@ -42,13 +43,15 @@ def test_phone_creates_lead_and_alerts_sales_once(temp_db):
     assert len(notes) == 1                                       # no repeated alerts
 
 
-def test_contact_request_without_phone_asks_for_number(temp_db):
+def test_contact_request_without_phone_asks_for_number(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "CLIENT_SAVE_LEADS", True)
     notes = []
     r = agent(notes).handle("web", "u3", "can someone call me? I want a villa")
     assert r["handed_off"] and "mobile number" in r["reply"] and len(notes) == 1
 
 
-def test_next_step_asks_one_missing_field_then_offers_call():
+def test_next_step_asks_one_missing_field_then_offers_call(monkeypatch):
+    monkeypatch.setattr(config, "CLIENT_SAVE_LEADS", True)
     assert "area" in next_step({}, arabic=False, has_lead=False)
     full = {"location": "New Cairo", "budget": 5e6, "unit_type": "Apartment", "bedrooms": 2}
     assert "mobile" in next_step(full, arabic=False, has_lead=False)
@@ -67,7 +70,8 @@ class FakeTelegram:
         self.replies.append(text)
 
 
-def test_client_bot_private_only_and_contact_share(temp_db):
+def test_client_bot_private_only_and_contact_share(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "CLIENT_SAVE_LEADS", True)
     notes, tg = [], FakeTelegram()
     a = agent(notes)
     group = {"message_id": 1, "chat": {"id": -5, "type": "group"}, "text": "hi"}
@@ -79,3 +83,35 @@ def test_client_bot_private_only_and_contact_share(temp_db):
     r = telegram_bot.handle_client_message(tg, {"message_id": 4, "chat": dm, "from": {"first_name": "Ali"},
                                                 "contact": {"phone_number": "+201122334455"}}, a)
     assert r["lead_id"] and notes
+
+
+def test_default_client_bot_never_touches_crm(temp_db):
+    notes = []
+    a = agent(notes)
+    before = temp_db.rows("SELECT COUNT(*) n FROM leads")[0]["n"]
+    a.handle("telegram", "c1", "عايز فيلا في التجمع، بكام؟")
+    r = a.handle("telegram", "c1", "رقمي 01012345678 وكلموني")
+    assert r["lead_id"] is None and not r["handed_off"] and not notes
+    assert temp_db.rows("SELECT COUNT(*) n FROM leads")[0]["n"] == before
+
+
+def test_client_sees_at_most_three_units_and_no_dumps(temp_db):
+    a = agent([])
+    r = a.handle("web", "c2", "شقق في التجمع تحت 20 مليون")
+    assert 0 < len(r["units"]) <= 3
+    for ask in ("ابعتلي كل الوحدات", "send me the full price list", "ابعتلي الشيت", "show me other clients"):
+        r = a.handle("web", "c2", ask)
+        assert r["units"] == [] and ("القايمة كلها" in r["reply"] or "full list" in r["reply"])
+
+
+def test_client_context_excludes_spreadsheets(temp_db):
+    from langchain_core.documents import Document
+
+    class Retriever:
+        def invoke(self, q):
+            return [Document(page_content="SECRET crm note: client Ahmed budget 5M", metadata={"source": "sales_notes.xlsx", "type": "sheet"}),
+                    Document(page_content="Palm Residence clubhouse and pools", metadata={"source": "Palm.pdf", "type": "pdf", "page": 1})]
+    from src.client_agent import ClientAgent
+    from src.offline import OfflineLLM
+    r = ClientAgent(OfflineLLM(), Retriever()).handle("web", "c3", "what amenities in Palm Residence?")
+    assert "clubhouse" in r["reply"] and "SECRET" not in r["reply"]

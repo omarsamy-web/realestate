@@ -173,28 +173,34 @@ def handle_message(client: TelegramClient, msg: dict, llm=None):
 
 
 # --------------------------------------------------------------------------- sales assistant (Phase 4)
-SALES_HELP = """مساعد السيلز 🤝
-/priority [عدد]  مين تكلمه النهاردة (حسب الأولوية)
-/clusters  شرائح العملاء ونصيحة لكل شريحة
-/lead <رقم أو موبايل أو اسم>  ملف العميل
-/recommend <رقم أو موبايل أو اسم>  أنسب الوحدات + رسالة واتساب جاهزة
-/newleads  آخر العملاء اللي جم من الشات بوت
-/ask <سؤال>  سؤال عن المشاريع والأسعار والسياسات
-/status  حالة الوحدات والأسعار"""
+SALES_HELP = """مساعد السيلز 🤝 (عنده كل الوحدات)
+اكتب سؤالك عادي، زي:
+• فلل التجمع تحت 15 مليون
+• كام وحدة متاحة في Rai Valleys وأسعارها من كام لكام
+• أرخص شقة 3 غرف في زايد
+• تاريخ سعر PR-101
+أوامر:
+/units <بحث>  الوحدات المطابقة من غير ذكاء اصطناعي
+/unit <كود>  تفاصيل وحدة وتاريخ سعرها
+/projects  ملخص كل المشاريع
+/status  حالة الأسعار والملفات"""
+
+CRM_HELP = """
+أوامر الـ CRM:
+/priority [عدد]  مين تكلمه النهاردة
+/clusters  شرائح العملاء
+/lead <كود>  ملف العميل
+/recommend <كود>  أنسب الوحدات + رسالة واتساب
+/newleads  آخر العملاء من الشات بوت"""
 
 _sales_assistant = {}
 
 
 def _sales_answer(question: str) -> str:
-    from .rag import RealEstateAssistant
+    from .sales_units import build_sales_assistant
     if "bot" not in _sales_assistant:
-        from .indexer import load_index
-        from .llm import get_llm
-        _sales_assistant["bot"] = RealEstateAssistant(load_index(config.OFFLINE_MODE), get_llm(config.OFFLINE_MODE))
-    bot = _sales_assistant["bot"]
-    bot.memory.clear()
-    answer, _, _ = bot.ask(question)
-    return answer
+        _sales_assistant["bot"] = build_sales_assistant()
+    return _sales_assistant["bot"].answer(question)["answer"]
 
 
 def _fmt_profile(p: dict) -> str:
@@ -215,7 +221,7 @@ def _fmt_profile(p: dict) -> str:
 
 def handle_sales(client: TelegramClient, msg: dict) -> bool:
     """Sales commands. Returns True if the message was handled."""
-    from . import lead_clustering, sales_agent
+    from . import lead_clustering, sales_agent, sales_units
 
     chat_id = str(msg.get("chat", {}).get("id"))
     if chat_id not in config.TELEGRAM_SALES_CHAT_IDS:
@@ -227,9 +233,18 @@ def handle_sales(client: TelegramClient, msg: dict) -> bool:
     command = parts[0].split("@")[0].lower() if text.startswith("/") else ""
     arg = parts[1].strip() if len(parts) > 1 else ""
     reply = None
+    crm_commands = ("/priority", "/clusters", "/lead", "/recommend", "/newleads")
     try:
-        if command in ("/help", "/start") and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS:
-            reply = SALES_HELP + "\n\n" + HELP_TEXT
+        if command in ("/help", "/start"):
+            reply = SALES_HELP + (CRM_HELP if config.SALES_CRM_ACCESS else "")
+        elif command in crm_commands and not config.SALES_CRM_ACCESS:
+            reply = "الأمر ده مقفول. بوت السيلز عنده وصول للوحدات بس."
+        elif command == "/units":
+            reply = sales_units.list_units(arg) if arg else "اكتب: /units فلل التجمع تحت 15 مليون"
+        elif command == "/unit":
+            reply = (sales_units.unit_details(arg) or "مش لاقي الوحدة دي.") if arg else "اكتب: /unit PR-101"
+        elif command == "/projects":
+            reply = sales_units.projects_overview()
         elif command == "/priority":
             n = int(arg) if arg.isdigit() else 10
             leads = lead_clustering.priority_list(min(n, 30))
@@ -251,14 +266,14 @@ def handle_sales(client: TelegramClient, msg: dict) -> bool:
             reply = _fmt_profile(p) if p else "مش لاقي العميل ده. جرّب الكود أو رقم الموبايل."
         elif command == "/recommend":
             reply = sales_agent.format_recommendation(sales_agent.recommend_for(arg)) if arg else "اكتب: /recommend <كود العميل>"
-        elif command == "/status":
-            reply = status_text()
         elif command == "/newleads":
             leads = radar.rows("SELECT * FROM leads WHERE notes LIKE 'From client chatbot%' ORDER BY id DESC LIMIT 10")
             reply = "\n".join(f"#{l['id']} {l['name']} | {l['phone']} | {l['area'] or '?'} | "
                                f"{(l['budget'] or 0) / 1e6:.1f}M | {l['created_at'][:16].replace('T', ' ')}"
                                for l in leads) or "مافيش عملاء جدد من الشات بوت."
-        elif command == "/ask" or (private and text and not command):
+        elif command == "/status":
+            reply = status_text()
+        elif command == "/ask" or (private and text and not command and chat_id not in config.TELEGRAM_PRICE_CHAT_IDS):
             question = arg if command == "/ask" else text
             reply = _sales_answer(question) if question else "اكتب: /ask <سؤالك>"
         else:
@@ -381,5 +396,6 @@ def run_client_bot(client: TelegramClient | None = None, once: bool = False) -> 
         raise SystemExit("TELEGRAM_CLIENT_BOT_TOKEN must be a different bot from TELEGRAM_BOT_TOKEN.")
     radar.init_db()
     client = client or TelegramClient(config.TELEGRAM_CLIENT_BOT_TOKEN)
-    agent = build_client_agent(notify=sales_notifier())
+    # fully separate by default: no CRM, no messages to the sales bot
+    agent = build_client_agent(notify=sales_notifier() if config.CLIENT_SAVE_LEADS else None)
     _poll(client, lambda m: handle_client_message(client, m, agent), "Telegram client bot", once)
