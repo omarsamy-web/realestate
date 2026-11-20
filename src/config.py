@@ -143,3 +143,47 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 LLM_CHUNK_CHAR_LIMIT = int(os.getenv("LLM_CHUNK_CHAR_LIMIT", "24000"))
 REPORTS_DIR = _resolve_path(os.getenv("REPORTS_DIR", "generated_reports"))
+
+
+def _flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---- Phase 1: API service ----
+DB_PATH = _resolve_path(os.getenv("RADAR_DB", "data/radar.db"))
+OFFLINE_MODE = _flag("OFFLINE_MODE")          # hashed embeddings + echo LLM, for testing only
+API_KEY = os.getenv("API_KEY", "").strip()    # if set, staff endpoints need header X-API-Key
+CHAT_SESSION_TTL_MIN = int(os.getenv("CHAT_SESSION_TTL_MIN", "120"))
+
+# ---- Phase 2: daily price ingestion ----
+PRICE_CHANGE_HOLD_PCT = float(os.getenv("PRICE_CHANGE_HOLD_PCT", "25"))  # bigger jumps wait for approval
+AUTO_REBUILD_INDEX = _flag("AUTO_REBUILD_INDEX", "1")
+INGEST_WEBHOOK_TOKEN = os.getenv("INGEST_WEBHOOK_TOKEN", "").strip()
+INGEST_USE_LLM_FALLBACK = _flag("INGEST_USE_LLM_FALLBACK", "1")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_PRICE_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_PRICE_CHAT_IDS", "").split(",") if c.strip()}
+TELEGRAM_REPLY_IN_GROUP = _flag("TELEGRAM_REPLY_IN_GROUP", "1")
+
+# ---- Daily documents (any file sent to the bot) ----
+DOCS_DIR = _resolve_path(os.getenv("DOCS_DIR", "data/documents"))
+MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_MB", "20")) * 1_000_000  # Telegram bots can download up to 20 MB
+
+# ---- Phase 3: client chatbot ----
+TELEGRAM_CLIENT_BOT_TOKEN = os.getenv("TELEGRAM_CLIENT_BOT_TOKEN", "").strip()  # a separate bot for clients
+CLIENT_API_KEY = os.getenv("CLIENT_API_KEY", "").strip()  # if set, POST /client/chat needs X-Client-Key
+
+# ---- Phase 4: sales assistant ----
+TELEGRAM_SALES_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_SALES_CHAT_IDS", "").split(",") if c.strip()}
+SALES_NOTES_FILE = _resolve_path(os.getenv("SALES_NOTES_FILE", "data/xlsx/sales_notes.xlsx"))
+CLIENT_SAVE_LEADS = _flag("CLIENT_SAVE_LEADS", "0")     # 0 = client bot has no CRM access at all
+CLIENT_MAX_UNITS = int(os.getenv("CLIENT_MAX_UNITS", "3"))  # most units the client bot shows at once
+CLIENT_CONTACT_TEXT = os.getenv("CLIENT_CONTACT_TEXT", "").strip()  # e.g. "Call us on 0100 000 0000"
+SALES_CRM_ACCESS = _flag("SALES_CRM_ACCESS", "0")       # 0 = sales bot sees units only, no lead commands
+
+# ---- Three bots ----
+# 1) main/admin bot (TELEGRAM_BOT_TOKEN): receives the daily data in TELEGRAM_PRICE_CHAT_IDS and
+#    chats with full access in TELEGRAM_ADMIN_CHAT_IDS
+# 2) client bot (TELEGRAM_CLIENT_BOT_TOKEN): buyers, no CRM, max 3 units
+# 3) sales bot (TELEGRAM_SALES_BOT_TOKEN): sales team in TELEGRAM_SALES_CHAT_IDS, all units, read only
+TELEGRAM_SALES_BOT_TOKEN = os.getenv("TELEGRAM_SALES_BOT_TOKEN", "").strip()
+TELEGRAM_ADMIN_CHAT_IDS = {c.strip() for c in os.getenv("TELEGRAM_ADMIN_CHAT_IDS", "").split(",") if c.strip()}

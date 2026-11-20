@@ -2,7 +2,7 @@
 
 > **Unified Real Estate CRM + RAG Chat + Multi-Agent Research Lab**
 
-This project combines three capabilities into a single Streamlit application:
+This project combines three capabilities behind one HTTP API (FastAPI) and CLI:
 
 1. **RADAR CRM** — lead management, explainable opportunity matching, inventory tracking, bilingual drafts, human approval workflow, consent checks, kill switch, and audit trail.
 2. **RAG Chat Assistant** — PDF and spreadsheet knowledge base with conversation memory, follow-up resolution, and source citations.
@@ -14,7 +14,9 @@ Run the entire platform from a single clean file:
 
 ```bash
 pip install -r requirements.txt
-streamlit run main.py
+python main.py build          # build the RAG index once
+python main.py serve          # API on http://localhost:8000, try it at /docs
+python main.py telegram       # listen to the daily price group (see below)
 ```
 
 Or run the CLI commands from the same file:
@@ -52,9 +54,17 @@ Unified RADAR Platform
 
 | Path | Purpose |
 |---|---|
-| `main.py` | **Unified application entrypoint** (Streamlit dashboard + CLI) |
+| `main.py` | **Unified entrypoint** (CLI: serve, telegram, ingest, build, chat, ask) |
+| `src/api.py` | FastAPI service: units, leads, opportunities, chat, price ingest, research |
+| `src/inventory.py` | Live unit search; feeds current prices into every chat answer |
+| `src/price_ingest.py` | Parses daily price messages/sheets, applies them with history and approvals |
+| `src/telegram_bot.py` | Telegram price-group listener (long polling) |
+| `src/documents.py` | Stores every daily file, indexes it for RAG, applies prices inside it |
+| `src/client_agent.py` | Client chatbot: requirements, grounded answers, lead capture, sales hand-off |
+| `src/requirements_extract.py` | Arabic/English/Franco requirement extraction from chats and notes |
+| `src/lead_clustering.py` | Lead profiles, KMeans clusters with playbooks, call priority |
+| `src/sales_agent.py` | Per-lead unit recommendations, talking points, WhatsApp drafts |
 | `app.py` | CLI alias redirecting to `main.py` |
-| `radar_app.py` | Streamlit alias redirecting to `main.py` |
 | `src/config.py` | Unified configuration (LLM providers, paths, limits) |
 | `src/radar.py` | CRM domain services and SQLite data layer |
 | `src/crm_workflow.py` | LangGraph CRM opportunity orchestrator |
@@ -70,6 +80,125 @@ Unified RADAR Platform
 | `eval/` | Evaluation framework and test set |
 | `tests/` | Pytest wiring and integration tests |
 | `generated_reports/` | Saved research reports |
+
+## Phase 3 · Live prices and daily price automation
+
+Unit prices change every day, so they live in the `units` table, not in the vector index.
+
+* **Chat answers use live prices.** Every question is matched against the units table
+  (unit code, project, area, bedrooms, budget, in Arabic or English) and the matching rows are
+  added to the prompt as `[live inventory]` with their last-updated time. The prompt tells the
+  model that live inventory beats any price written in a brochure.
+* **Price history.** Every change is stored in `price_history` with its source
+  (`GET /units/{unit_id}/history`).
+* **Ingestion from the price group.** Messages like these are understood:
+
+  ```
+  PR-101 3,350,000
+  NV-102 : 3.7 مليون
+  PR-102 محجوزة
+  Rai Valleys - 88 - 129 - E  18,300,000
+  زيادة 5% على Nile View Towers
+  ```
+
+  An `.xlsx`/`.csv` sheet posted in the group is applied row by row (new units are added).
+  Free-form messages the rules can't read go to the LLM, whose answer is checked so it can't
+  invent unit codes.
+* **Safety.** A change bigger than `PRICE_CHANGE_HOLD_PCT` (25% by default) is held until someone
+  approves it (`GET /ingest/pending`, `POST /ingest/pending/{id}/decision`). Unknown units are
+  rejected and reported. The same message is never applied twice.
+* After each update the CRM opportunity agents run (price drops create opportunities) and the RAG
+  index is rebuilt in the background.
+
+### Daily documents (any file)
+Send any file to the bot (or `POST /documents`, or `python main.py ingest --file x.pdf`):
+PDF, Excel (`.xlsx`/`.xls`), CSV, Word (`.docx`), `.txt`, `.md`, `.json`.
+
+* The file is saved in `data/documents/<date>/` and listed in `GET /documents` (the same file twice is skipped).
+* A unit sheet updates the units table. Any other file is scanned for unit price lines,
+  so a PDF or Word price list updates prices too. Brochure text like "10% down payment" never reprices a project.
+* Everything else (brochures, policies, offers, notes) is added to the RAG knowledge base and the
+  chat can answer from it, citing the file and page.
+* Photos and scanned PDFs without text are not read yet. Telegram bots can download files up to 20 MB.
+
+### Telegram setup
+1. Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN`.
+2. In @BotFather run `/setprivacy` → Disable, so the bot can read group messages.
+3. Add the bot to the price group and send `/chatid`. Put the number in `TELEGRAM_PRICE_CHAT_IDS`.
+4. Run `python main.py telegram`. The bot replies in the group with what it changed.
+   Commands: `/help`, `/status` (available units, last price change, pending approvals, latest files), `/chatid`.
+
+### WhatsApp
+WhatsApp's official API can't read group messages. Use any automation that can forward the
+group's messages (n8n, Make, a forwarding number, or an unofficial WhatsApp Web bridge, which
+risks a ban) to the webhook:
+
+```bash
+curl -X POST http://localhost:8000/ingest/webhook \
+  -H "X-Ingest-Token: $INGEST_WEBHOOK_TOKEN" -H "Content-Type: application/json" \
+  -d '{"source": "whatsapp", "message_id": "abc123", "text": "PR-101 3,350,000"}'
+```
+
+### Manual ingestion
+```bash
+python main.py ingest --text "PR-101 3,350,000"
+python main.py ingest --file "today prices.xlsx"
+```
+
+## Three separate Telegram bots
+
+| | Main bot | Sales bot | Client bot |
+|---|---|---|---|
+| Run | `python main.py telegram` | `python main.py sales-bot` | `python main.py client-bot` |
+| Token | `TELEGRAM_BOT_TOKEN` | `TELEGRAM_SALES_BOT_TOKEN` | `TELEGRAM_CLIENT_BOT_TOKEN` |
+| Who | you / admins (`TELEGRAM_ADMIN_CHAT_IDS`) + price groups (`TELEGRAM_PRICE_CHAT_IDS`) | sales team (`TELEGRAM_SALES_CHAT_IDS`) | any buyer, private chat |
+| Daily data in (prices, files) | ✅ | ❌ | ❌ |
+| Units it can see | all | all | max 3 per answer |
+| CRM | if `SALES_CRM_ACCESS=1` | if `SALES_CRM_ACCESS=1` | none (unless `CLIENT_SAVE_LEADS=1`) |
+
+All three chat naturally and remember the conversation. In the main bot's admin chat, a message with
+unit price lines (`PR-101 3,300,000`) is applied as a price update; anything else is answered as a question.
+In groups, the main and sales bots answer when you @mention them or reply to them.
+
+Sales bot examples: `فلل التجمع تحت 20 مليون`, `كام وحدة متاحة في Rai Valleys`, `وفي زايد؟`,
+`تاريخ سعر PR-101`. Commands: `/units`, `/unit`, `/projects`, `/status`, `/reset`.
+
+## Phase 4 · Client chatbot (talks to buyers)
+
+A **separate Telegram bot** for clients (`TELEGRAM_CLIENT_BOT_TOKEN`, run `python main.py client-bot`),
+or any channel through `POST /client/chat` (website widget, WhatsApp bridge).
+
+* Answers **only** from company data: today's prices from the units table and the documents in the
+  knowledge base. It never invents units, prices or offers, and never shows internal notes or other clients.
+* Learns the client's requirements as they chat (area, budget, type, bedrooms, cash/installments) in Arabic,
+  English or Franco, and asks one question at a time for what is missing.
+* Recommends up to 3 available units that fit, relaxing the filters if nothing matches exactly.
+* When the client shares a phone number (or the Telegram "share contact" button), they become a CRM lead
+  with their requirements and consent, and the sales team gets an alert. Asking for a call also alerts sales.
+
+## Phase 5 · Sales assistant and CRM clustering
+
+```bash
+python main.py profile-leads           # profiles + clusters + call priority (~2 min for 100k notes)
+python main.py recommend 4             # best units for a lead + WhatsApp draft
+```
+
+* **Lead profiles:** every lead's notes (`SALES_NOTES_FILE`, plus CRM and client-bot leads) become
+  structured fields: budget, area, bedrooms, type, payment, down payment, objections (price, installments,
+  down payment, delivery, maintenance, comparing, developer trust), engagement, last contact.
+* **Clusters:** KMeans picks the number of segments. Each gets a readable label such as
+  `New Cairo · Apartment · 3BR · ~6.1M · installments · objection: short installments` and a playbook.
+* **Priority (0-100):** who to call first, with the reasons (engagement, recency, budget known, how many
+  available units match right now, unreachable, not in a hurry, lost).
+* **Recommendations:** the best available units per lead with a fit score, why each fits, recent price drops,
+  talking points for the lead's objections, a next action, and a ready WhatsApp message.
+
+**Sales bot:** the internal bot also serves the sales team. Put the sales group (or each salesperson's
+private chat id) in `TELEGRAM_SALES_CHAT_IDS`. Commands: `/priority`, `/clusters`, `/lead <id>`,
+`/recommend <id>`, `/newleads`, `/ask <question>`, `/status`. In a private chat any message is a question.
+
+API: `POST /sales/clusters/run`, `GET /sales/clusters`, `GET /sales/priority`, `GET /sales/leads/{key}`,
+`GET /sales/leads/{key}/recommendations`, `POST /sales/ask`, `POST /client/chat`.
 
 ## Configuration
 
@@ -146,4 +275,4 @@ python -m eval.evaluate --offline  # retrieval check only
 
 ## Tested With
 
-langchain 1.4.9, langchain-core 1.7.6, langchain-community 0.4.2, langgraph 1.x, PyMuPDF 1.24+, Streamlit 1.36+.
+langchain 1.4.9, langchain-core 1.7.6, langchain-community 0.4.2, langgraph 1.x, PyMuPDF 1.24+, FastAPI 0.110+.

@@ -8,3 +8,4 @@ data/radar.db
 eval/results.csv
 radar_multi_agent/.env
 radar_multi_agent/.venv/
+data/documents/

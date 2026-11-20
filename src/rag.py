@@ -22,8 +22,12 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
      "- Copy prices, areas, dates and percentages exactly as written.\n"
      "- Cite sources in brackets, e.g. [Palm_Residence_Brochure.pdf p.2] or [units.csv row 5].\n"
      "- Reply in the same language the user writes in (Arabic or English).\n"
-     "- Use the conversation summary and history for follow-up questions.\n\n"
+     "- Use the conversation summary and history for follow-up questions.\n"
+     "- Prices and availability change daily. For any price, status or availability, use ONLY the "
+     "[live inventory] lines, cite them as [live inventory], and mention the 'price updated' date. "
+     "If a document shows a different price, the live inventory wins.\n\n"
      "Conversation summary: {summary}\n\n"
+     "Live inventory (from the units database):\n{live}\n\n"
      "Context:\n{context}"),
     MessagesPlaceholder("history"),
     ("human", "{question}"),
@@ -40,7 +44,9 @@ def format_context(docs) -> str:
 
 
 class RealEstateAssistant:
-    def __init__(self, vectorstore, llm, memory=None, k: int = config.TOP_K):
+    def __init__(self, vectorstore, llm, memory=None, k: int = config.TOP_K, live_inventory: bool = True):
+        self.live_inventory = live_inventory
+        self.last_units: list[dict] = []
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": k})
         self.memory = memory or BufferMemory()
         self.rewrite_chain = REWRITE_PROMPT | llm | StrOutputParser()
@@ -55,9 +61,15 @@ class RealEstateAssistant:
         )
         # 2) retrieve
         docs = self.retriever.invoke(standalone)
+        # 2b) live prices come from the units table, never from the vector index
+        live, self.last_units = ("", [])
+        if self.live_inventory:
+            from .inventory import live_context
+            live, self.last_units = live_context(standalone)
         # 3) answer with context + memory
         answer = self.answer_chain.invoke({
             "summary": self.memory.summary() or "(none)",
+            "live": live or "(no matching units)",
             "context": format_context(docs),
             "history": history,
             "question": question,
