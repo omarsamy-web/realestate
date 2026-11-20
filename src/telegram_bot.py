@@ -28,6 +28,24 @@ logger = logging.getLogger(__name__)
 API = "https://api.telegram.org"
 
 
+# httpx logs every request URL at INFO, and Telegram URLs contain the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+class BotConflict(RuntimeError):
+    """Another program is already reading updates for this bot token."""
+
+
+CONFLICT_HELP = (
+    "Telegram says another program is already using this bot token (409 Conflict).\n"
+    "Only ONE program can read a bot's messages at a time. Fix it by one of:\n"
+    "  1. Close any other terminal running 'main.py telegram' (or the old project's bot) with the same token.\n"
+    "  2. Make sure TELEGRAM_CLIENT_BOT_TOKEN is a DIFFERENT bot from TELEGRAM_BOT_TOKEN.\n"
+    "  3. If the token is used on another computer or server, stop it there, or create a new bot with @BotFather.\n"
+    "Retrying every 30 seconds..."
+)
+
+
 class TelegramClient:
     def __init__(self, token: str, http: httpx.Client | None = None):
         if not token:
@@ -37,6 +55,10 @@ class TelegramClient:
 
     def call(self, method: str, **params):
         r = self.http.post(f"{API}/bot{self.token}/{method}", json=params)
+        if r.status_code == 409:
+            raise BotConflict(r.json().get("description", "Conflict"))
+        if r.status_code == 401:
+            raise SystemExit("Telegram rejected the token (401). Check TELEGRAM_BOT_TOKEN in .env.")
         r.raise_for_status()
         data = r.json()
         if not data.get("ok"):
@@ -308,7 +330,14 @@ def handle_client_message(client: TelegramClient, msg: dict, agent) -> dict | No
 # --------------------------------------------------------------------------- polling
 def _poll(client: TelegramClient, handle, name: str, once: bool = False) -> None:
     offset = None
-    logger.info("%s started", name)
+    try:
+        me = client.call("getMe")
+        # a webhook left over from another tool blocks polling; long polling needs it removed
+        client.call("deleteWebhook", drop_pending_updates=False)
+        logger.info("%s started as @%s", name, me.get("username"))
+    except BotConflict:
+        pass
+    warned = False
     while True:
         try:
             params = {"timeout": 50, "allowed_updates": ["message", "channel_post"]}
@@ -321,8 +350,13 @@ def _poll(client: TelegramClient, handle, name: str, once: bool = False) -> None
                     handle(msg)
         except KeyboardInterrupt:
             break
-        except Exception:
-            logger.exception("Polling error; retrying in 5s")
+        except BotConflict:
+            if not warned:
+                logger.error(CONFLICT_HELP)
+                warned = True
+            time.sleep(30)
+        except Exception as exc:
+            logger.error("Polling error (%s); retrying in 5s", type(exc).__name__)
             time.sleep(5)
         if once:
             break
@@ -341,6 +375,10 @@ def run_polling(client: TelegramClient | None = None, once: bool = False) -> Non
 def run_client_bot(client: TelegramClient | None = None, once: bool = False) -> None:
     """Client bot: a separate bot token that buyers talk to privately."""
     from .client_agent import build_client_agent
+    if not config.TELEGRAM_CLIENT_BOT_TOKEN:
+        raise SystemExit("Set TELEGRAM_CLIENT_BOT_TOKEN in .env (a second bot from @BotFather, not the internal one).")
+    if config.TELEGRAM_CLIENT_BOT_TOKEN == config.TELEGRAM_BOT_TOKEN:
+        raise SystemExit("TELEGRAM_CLIENT_BOT_TOKEN must be a different bot from TELEGRAM_BOT_TOKEN.")
     radar.init_db()
     client = client or TelegramClient(config.TELEGRAM_CLIENT_BOT_TOKEN)
     agent = build_client_agent(notify=sales_notifier())

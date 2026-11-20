@@ -109,3 +109,20 @@ def test_client_and_sales_endpoints(client, monkeypatch):
     rec = client.get(f"/sales/leads/{r['lead_id']}/recommendations").json()
     assert rec["units"] and rec["whatsapp_draft"]
     api._client_agent.clear()
+
+
+def test_polling_survives_409_conflict(temp_db, monkeypatch):
+    import httpx
+    calls = []
+
+    def handler(request):
+        method = request.url.path.rsplit("/", 1)[-1]
+        calls.append(method)
+        if method == "getUpdates":
+            return httpx.Response(409, json={"ok": False, "description": "Conflict: terminated by other getUpdates"})
+        return httpx.Response(200, json={"ok": True, "result": {"username": "radar_bot"} if method == "getMe" else True})
+
+    monkeypatch.setattr(telegram_bot.time, "sleep", lambda s: None)
+    client = telegram_bot.TelegramClient("123:abc", http=httpx.Client(transport=httpx.MockTransport(handler)))
+    telegram_bot._poll(client, lambda m: None, "test bot", once=True)   # must not raise
+    assert calls == ["getMe", "deleteWebhook", "getUpdates"]
